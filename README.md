@@ -73,21 +73,6 @@ FRONTEND_PORT=3000
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-## 🚀 Deployment
-
-The application is containerized and ready for deployment:
-
-```bash
-# Start all services
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop services
-docker-compose down
-```
-
 ## 📝 API Documentation
 
 Once running, visit http://localhost:8000/docs (or your configured BACKEND_PORT) for interactive API documentation.
