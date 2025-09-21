@@ -44,3 +44,7 @@ out/
 # Temporary files
 *.tmp
 *.temp
+
+
+# docs
+docs/
