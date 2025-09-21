@@ -25,6 +25,24 @@ class GuardrailsResult:
         self.parsed_columns: List[str] = []
 
 
+def normalize_dialect(dialect: str) -> str:
+    """
+    Normalize dialect names for sqlglot compatibility.
+    
+    Args:
+        dialect: Input dialect name
+        
+    Returns:
+        Normalized dialect name
+    """
+    dialect_map = {
+        "postgresql": "postgres",
+        "mssql": "tsql",
+        "sqlserver": "tsql"
+    }
+    return dialect_map.get(dialect.lower(), dialect.lower())
+
+
 def parse_sql(sql: str, dialect: str = "postgres") -> Tuple[Optional[exp.Expression], List[str]]:
     """
     Parse SQL using sqlglot.
@@ -37,7 +55,8 @@ def parse_sql(sql: str, dialect: str = "postgres") -> Tuple[Optional[exp.Express
         Tuple of (parsed_expression, errors)
     """
     try:
-        parsed = sqlglot.parse_one(sql, dialect=dialect)
+        normalized_dialect = normalize_dialect(dialect)
+        parsed = sqlglot.parse_one(sql, dialect=normalized_dialect)
         return parsed, []
     except Exception as e:
         return None, [str(e)]
@@ -107,7 +126,8 @@ def inject_limit(sql: str, limit: int, dialect: str = "postgres") -> Tuple[str, 
         Tuple of (modified_sql, was_modified)
     """
     try:
-        parsed = sqlglot.parse_one(sql, dialect=dialect)
+        normalized_dialect = normalize_dialect(dialect)
+        parsed = sqlglot.parse_one(sql, dialect=normalized_dialect)
         
         # Check if LIMIT already exists
         if parsed.find(exp.Limit):
@@ -119,7 +139,7 @@ def inject_limit(sql: str, limit: int, dialect: str = "postgres") -> Tuple[str, 
         
         # Add LIMIT
         parsed = parsed.limit(limit)
-        modified_sql = parsed.sql(dialect=dialect)
+        modified_sql = parsed.sql(dialect=normalized_dialect)
         
         return modified_sql, True
         
@@ -188,7 +208,8 @@ def apply_pii_masking(sql: str, pii_columns: List[str], dialect: str = "postgres
     modifications = []
     
     try:
-        parsed = sqlglot.parse_one(sql, dialect=dialect)
+        normalized_dialect = normalize_dialect(dialect)
+        parsed = sqlglot.parse_one(sql, dialect=normalized_dialect)
         
         # Find and replace PII columns with hashed versions
         for column in parsed.find_all(exp.Column):
@@ -198,7 +219,7 @@ def apply_pii_masking(sql: str, pii_columns: List[str], dialect: str = "postgres
                 column.replace(hash_func)
                 modifications.append(f"Masked PII column: {column.name}")
         
-        modified_sql = parsed.sql(dialect=dialect)
+        modified_sql = parsed.sql(dialect=normalized_dialect)
         return modified_sql, modifications
         
     except Exception as e:
