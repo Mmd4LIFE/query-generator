@@ -221,18 +221,24 @@ export default function QueryGeneratorApp() {
             <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
               <Database className="w-4 h-4 text-primary-foreground" />
             </div>
-            <div>
+            <div className="hidden sm:block">
               <h1 className="text-xl font-bold text-foreground">Query Generator</h1>
               <p className="text-sm text-muted-foreground">AI-powered SQL generation</p>
             </div>
+            <div className="sm:hidden">
+              <h1 className="text-lg font-bold text-foreground">QG</h1>
+            </div>
           </div>
           <div className="flex items-center space-x-2">
-            <Badge variant="secondary" className="flex items-center space-x-1">
+            <Badge variant="secondary" className="hidden sm:flex items-center space-x-1">
               <User className="w-3 h-3" />
               <span>{userProfile?.username || username}</span>
             </Badge>
+            <Badge variant="secondary" className="sm:hidden">
+              <User className="w-3 h-3" />
+            </Badge>
             {permissions.isAdmin && (
-              <Badge variant="outline" className="text-xs">
+              <Badge variant="outline" className="text-xs hidden sm:block">
                 {permissions.roleDisplayName}
               </Badge>
             )}
@@ -251,7 +257,7 @@ export default function QueryGeneratorApp() {
         />
 
         {/* Main Content */}
-        <main className="flex-1">
+        <main className="flex-1 lg:ml-0 pt-16 lg:pt-0">
           {currentPage === "generate" && <GenerateQueryPage api={api} />}
           {currentPage === "catalogs" && (
             <ManageCatalogsPage 

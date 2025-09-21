@@ -94,22 +94,22 @@ export function GenerateQueryPage({ api }: GenerateQueryPageProps) {
   }
 
   return (
-    <div className="container mx-auto px-6 py-8">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+    <div className="container mx-auto px-3 sm:px-6 py-4 sm:py-8 max-w-7xl">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-8">
         {/* Query Input Section */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="lg:col-span-2 space-y-4 sm:space-y-6">
           <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center space-x-2">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center space-x-2 text-lg sm:text-xl">
                 <Zap className="w-5 h-5 text-primary" />
                 <span>Generate SQL Query</span>
               </CardTitle>
-              <CardDescription>Describe what you want to query in natural language</CardDescription>
+              <CardDescription className="text-sm">Describe what you want to query in natural language</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label htmlFor="catalog">Database Catalog</Label>
+                  <Label htmlFor="catalog" className="text-sm font-medium">Database Catalog</Label>
                   {selectedCatalog && (
                     <Badge variant="secondary" className="text-xs">
                       Engine: {getSelectedCatalogEngine()}
@@ -117,15 +117,15 @@ export function GenerateQueryPage({ api }: GenerateQueryPageProps) {
                   )}
                 </div>
                 <Select value={selectedCatalog} onValueChange={setSelectedCatalog}>
-                  <SelectTrigger>
+                  <SelectTrigger className="h-11 min-h-[44px]">
                     <SelectValue placeholder="Select a catalog" />
                   </SelectTrigger>
                   <SelectContent>
                     {catalogs.map((catalog) => (
                       <SelectItem key={catalog.id} value={catalog.id}>
                         <div className="flex items-center justify-between w-full">
-                          <span>{catalog.catalog_name} - {catalog.description}</span>
-                          <Badge variant="outline" className="ml-2 text-xs">
+                          <span className="truncate">{catalog.catalog_name} - {catalog.description}</span>
+                          <Badge variant="outline" className="ml-2 text-xs flex-shrink-0">
                             {catalog.engine}
                           </Badge>
                         </div>
@@ -135,23 +135,23 @@ export function GenerateQueryPage({ api }: GenerateQueryPageProps) {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="question">Your Question</Label>
+                <Label htmlFor="question" className="text-sm font-medium">Your Question</Label>
                 <Textarea
                   id="question"
                   placeholder="e.g., Show me the top 10 customers by total order amount"
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   rows={3}
-                  className="resize-none"
+                  className="resize-none min-h-[88px] text-base"
                 />
               </div>
               {error && (
                 <Alert variant="destructive">
                   <AlertCircle className="h-4 w-4" />
-                  <AlertDescription>{error}</AlertDescription>
+                  <AlertDescription className="text-sm">{error}</AlertDescription>
                 </Alert>
               )}
-              <Button onClick={handleGenerateQuery} className="w-full" disabled={isLoading}>
+              <Button onClick={handleGenerateQuery} className="w-full h-12 min-h-[48px]" disabled={isLoading}>
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -170,24 +170,24 @@ export function GenerateQueryPage({ api }: GenerateQueryPageProps) {
           {/* Query Results */}
           {queryResult && (
             <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center justify-between">
+              <CardHeader className="pb-4">
+                <CardTitle className="flex items-center justify-between text-lg sm:text-xl">
                   <span>Generated Query</span>
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={copyToClipboard}
-                    className="flex items-center space-x-1 bg-transparent"
+                    className="flex items-center space-x-1 bg-transparent h-9 min-h-[44px]"
                   >
                     {copied ? (
                       <>
                         <CheckCircle className="w-4 h-4" />
-                        <span>Copied!</span>
+                        <span className="hidden sm:inline">Copied!</span>
                       </>
                     ) : (
                       <>
                         <Copy className="w-4 h-4" />
-                        <span>Copy</span>
+                        <span className="hidden sm:inline">Copy</span>
                       </>
                     )}
                   </Button>
@@ -195,36 +195,36 @@ export function GenerateQueryPage({ api }: GenerateQueryPageProps) {
               </CardHeader>
               <CardContent>
                 <Tabs defaultValue="sql" className="w-full">
-                  <TabsList className="grid w-full grid-cols-3">
-                    <TabsTrigger value="sql">SQL Query</TabsTrigger>
-                    <TabsTrigger value="explanation">Explanation</TabsTrigger>
-                    <TabsTrigger value="validation">Validation</TabsTrigger>
+                  <TabsList className="grid w-full grid-cols-3 h-10 min-h-[44px]">
+                    <TabsTrigger value="sql" className="text-xs sm:text-sm px-2">SQL Query</TabsTrigger>
+                    <TabsTrigger value="explanation" className="text-xs sm:text-sm px-2">Explanation</TabsTrigger>
+                    <TabsTrigger value="validation" className="text-xs sm:text-sm px-2">Validation</TabsTrigger>
                   </TabsList>
 
-                  <TabsContent value="sql" className="space-y-4">
-                    <div className="bg-muted p-4 rounded-lg">
-                      <pre className="text-sm font-mono whitespace-pre-wrap text-foreground">{queryResult.sql}</pre>
+                  <TabsContent value="sql" className="space-y-4 mt-4">
+                    <div className="bg-muted p-3 sm:p-4 rounded-lg overflow-x-auto">
+                      <pre className="text-xs sm:text-sm font-mono whitespace-pre-wrap text-foreground">{queryResult.sql}</pre>
                     </div>
                   </TabsContent>
 
-                  <TabsContent value="explanation" className="space-y-4">
+                  <TabsContent value="explanation" className="space-y-4 mt-4">
                     <p className="text-sm text-muted-foreground leading-relaxed">{queryResult.explanation}</p>
                     <Separator />
-                    <div className="space-y-2">
-                      <h4 className="font-medium">Tables Used:</h4>
+                    <div className="space-y-3">
+                      <h4 className="font-medium text-sm">Tables Used:</h4>
                       <div className="flex flex-wrap gap-2">
                         {queryResult.validation.parsed_tables.map((table) => (
-                          <Badge key={table} variant="outline">
+                          <Badge key={table} variant="outline" className="text-xs">
                             {table}
                           </Badge>
                         ))}
                       </div>
                     </div>
-                    <div className="space-y-2">
-                      <h4 className="font-medium">Columns Used:</h4>
+                    <div className="space-y-3">
+                      <h4 className="font-medium text-sm">Columns Used:</h4>
                       <div className="flex flex-wrap gap-2">
                         {queryResult.validation.parsed_columns.map((column) => (
-                          <Badge key={column} variant="secondary">
+                          <Badge key={column} variant="secondary" className="text-xs">
                             {column}
                           </Badge>
                         ))}
@@ -232,7 +232,7 @@ export function GenerateQueryPage({ api }: GenerateQueryPageProps) {
                     </div>
                   </TabsContent>
 
-                  <TabsContent value="validation" className="space-y-4">
+                  <TabsContent value="validation" className="space-y-4 mt-4">
                     <div className="space-y-3">
                       <div className="flex items-center space-x-2">
                         {queryResult.validation.syntax_valid ? (
