@@ -273,40 +273,6 @@ export function GenerateQueryPage({ api }: GenerateQueryPageProps) {
           )}
         </div>
 
-        {/* Sidebar */}
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Example Queries</CardTitle>
-              <CardDescription>Try these sample questions</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-2">
-                <Button
-                  variant="ghost"
-                  className="w-full text-left h-auto p-3 text-wrap"
-                  onClick={() => setQuestion("Show me the top 10 customers by total order amount")}
-                >
-                  <div className="text-sm">"Show me the top 10 customers by total order amount"</div>
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="w-full text-left h-auto p-3 text-wrap"
-                  onClick={() => setQuestion("What was the monthly revenue trend for the last 6 months?")}
-                >
-                  <div className="text-sm">"What was the monthly revenue trend for the last 6 months?"</div>
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="w-full text-left h-auto p-3 text-wrap"
-                  onClick={() => setQuestion("Find customers who haven't placed an order in the last 30 days")}
-                >
-                  <div className="text-sm">"Find customers who haven't placed an order in the last 30 days"</div>
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
       </div>
     </div>
   )
