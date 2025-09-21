@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database with pgvector
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-qg}
+      POSTGRES_USER: ${POSTGRES_USER:-qg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qg}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./query-generator-backend/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-qg} -d ${POSTGRES_DB:-qg}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API
+  backend:
+    build:
+      context: ./query-generator-backend
+      dockerfile: Dockerfile
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-qg}:${POSTGRES_PASSWORD:-qg}@postgres:5432/${POSTGRES_DB:-qg}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-qg}
+      POSTGRES_USER: ${POSTGRES_USER:-qg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qg}
+      BACKEND_PORT: ${BACKEND_PORT:-8000}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      ADMIN_FULL_NAME: ${ADMIN_FULL_NAME:-Administrator}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      EMBED_MODEL: ${EMBED_MODEL:-text-embedding-3-large}
+      GEN_MODEL: ${GEN_MODEL:-gpt-4o}
+      SECRET_KEY: ${SECRET_KEY}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MAX_CHUNKS: ${MAX_CHUNKS:-12}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-3072}
+      BATCH_SIZE: ${BATCH_SIZE:-64}
+      MAX_TOKENS: ${MAX_TOKENS:-2000}
+      TEMPERATURE: ${TEMPERATURE:-0.1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./query-generator-backend/app:/app/app
+    command: >
+      sh -c "
+        echo '⏳ Waiting for database...' &&
+        sleep 5 &&
+        echo '🗃️ Running migrations...' &&
+        alembic upgrade head &&
+        echo '👤 Creating admin user...' &&
+        python create_admin_user.py &&
+        echo '🚀 Starting server...' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+  # Frontend
+  frontend:
+    build:
+      context: ./query-generator-frontend
+      dockerfile: Dockerfile
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:${BACKEND_PORT:-8000}}
+      NEXT_PUBLIC_BACKEND_PORT: ${BACKEND_PORT:-8000}
+      NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-false}
+      NEXT_PUBLIC_API_TIMEOUT: ${NEXT_PUBLIC_API_TIMEOUT:-30000}
+      NEXT_PUBLIC_API_RETRY_ATTEMPTS: ${NEXT_PUBLIC_API_RETRY_ATTEMPTS:-3}
+      NEXT_PUBLIC_API_RETRY_DELAY: ${NEXT_PUBLIC_API_RETRY_DELAY:-1000}
+      NEXT_PUBLIC_ANALYTICS_ENABLED: ${NEXT_PUBLIC_ANALYTICS_ENABLED:-false}
+      NEXT_PUBLIC_FEEDBACK_ENABLED: ${NEXT_PUBLIC_FEEDBACK_ENABLED:-true}
+      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Query Generator}
+      NEXT_PUBLIC_APP_DESCRIPTION: ${NEXT_PUBLIC_APP_DESCRIPTION:-AI-powered SQL query generation from natural language}
+      PORT: 3000
+    depends_on:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  postgres_data:
