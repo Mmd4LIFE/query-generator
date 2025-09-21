@@ -13,7 +13,7 @@ An AI-powered SQL query generation tool that converts natural language into SQL 
 
 1. **Clone the repository**
    ```bash
-   git clone <your-repo-url>
+   git clone https://github.com/Mmd4LIFE/query-generator.git
    cd query-generator
    ```
 
@@ -91,24 +91,3 @@ docker-compose down
 ## 📝 API Documentation
 
 Once running, visit http://localhost:8000/docs (or your configured BACKEND_PORT) for interactive API documentation.
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License.
-
-## 🙏 Acknowledgments
-
-- OpenAI for providing the GPT models
-- The FastAPI and Next.js communities
-- All contributors and users
-
----
-
-**Built with ❤️ for developers who want to query databases with natural language**
