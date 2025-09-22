@@ -2,7 +2,10 @@
 
 An AI-powered SQL query generation tool that converts natural language into SQL queries using OpenAI's GPT models and vector embeddings.
 
-## 🚀 Quick Start
+![Query Generator Application](image.png)
+
+
+## Quick Start
 
 ### Prerequisites
 

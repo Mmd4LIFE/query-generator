@@ -94,11 +94,11 @@ export function GenerateQueryPage({ api }: GenerateQueryPageProps) {
   }
 
   return (
-    <div className="container mx-auto px-3 sm:px-6 py-4 sm:py-8 max-w-7xl">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-8">
+    <div className="h-full w-full">
+      <div className="h-full w-full space-y-4 sm:space-y-6 p-4">
         {/* Query Input Section */}
-        <div className="lg:col-span-2 space-y-4 sm:space-y-6">
-          <Card>
+        <div className="w-full space-y-4 sm:space-y-6">
+          <Card className="w-full" style={{maxWidth: 'none', width: '100%'}}>
             <CardHeader className="pb-4">
               <CardTitle className="flex items-center space-x-2 text-lg sm:text-xl">
                 <Zap className="w-5 h-5 text-primary" />
@@ -169,7 +169,7 @@ export function GenerateQueryPage({ api }: GenerateQueryPageProps) {
 
           {/* Query Results */}
           {queryResult && (
-            <Card>
+            <Card className="w-full" style={{maxWidth: 'none', width: '100%'}}>
               <CardHeader className="pb-4">
                 <CardTitle className="flex items-center justify-between text-lg sm:text-xl">
                   <span>Generated Query</span>

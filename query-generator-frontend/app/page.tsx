@@ -213,10 +213,10 @@ export default function QueryGeneratorApp() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className={`min-h-screen bg-background ${isAuthenticated ? 'authenticated-layout' : ''}`}>
         {/* Header */}
         <header className="border-b bg-card">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="w-full px-4 py-4 flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
               <Database className="w-4 h-4 text-primary-foreground" />
@@ -249,7 +249,7 @@ export default function QueryGeneratorApp() {
         </div>
       </header>
 
-      <div className="flex">
+      <div className="grid grid-cols-[256px_1fr] min-h-screen lg:grid-cols-[256px_1fr] grid-cols-1">
         <Navigation 
           currentPage={currentPage} 
           onPageChange={setCurrentPage} 
@@ -257,7 +257,7 @@ export default function QueryGeneratorApp() {
         />
 
         {/* Main Content */}
-        <main className="flex-1 lg:ml-0 pt-16 lg:pt-0">
+        <main className="pt-16 lg:pt-0 min-h-screen overflow-hidden">
           {currentPage === "generate" && <GenerateQueryPage api={api} />}
           {currentPage === "catalogs" && (
             <ManageCatalogsPage 

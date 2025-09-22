@@ -125,4 +125,17 @@
   body {
     @apply bg-background text-foreground;
   }
+  
+  /* Only apply full width rules to authenticated main content */
+  .authenticated-layout main {
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+  }
+  
+  /* Only target cards within the main app, not login page */
+  .authenticated-layout [data-slot="card"] {
+    width: 100% !important;
+    max-width: none !important;
+  }
 }
