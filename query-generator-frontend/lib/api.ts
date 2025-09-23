@@ -16,5 +16,7 @@ export type {
   SecurityPolicy,
   CreateCatalogRequest,
   ApiResponse,
-  PaginatedResponse
+  PaginatedResponse,
+  QueryHistoryItem,
+  SubmitFeedbackRequest
 } from './api-client'

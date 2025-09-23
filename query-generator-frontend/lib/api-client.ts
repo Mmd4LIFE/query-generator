@@ -106,6 +106,42 @@ export interface QueryResult {
   }
 }
 
+// Query History Types
+export interface QueryHistoryItem {
+  id: string
+  catalog_id: string
+  engine: string
+  question: string
+  generated_sql?: string
+  explanation?: string
+  syntax_valid?: boolean
+  status: string
+  generation_time_ms?: number
+  created_at: string
+  tokens_used?: number
+  // Additional fields for frontend display
+  catalog_name?: string
+  username?: string
+  feedback?: {
+    id: string
+    rating: 'positive' | 'negative' | 'neutral'
+    comment: string
+    admin_username: string
+    created_at: string
+  }
+}
+
+export interface SubmitFeedbackRequest {
+  query_id: string
+  rating?: number  // 1-5 scale
+  comment?: string
+  correctness?: number  // 1-5 scale
+  completeness?: number  // 1-5 scale
+  efficiency?: number  // 1-5 scale
+  suggested_sql?: string
+  improvement_notes?: string
+}
+
 // Policy Types
 export interface SecurityPolicy {
   allow_write: boolean
@@ -931,6 +967,77 @@ ORDER BY month;`,
     return this.request<Example>(`/v1/examples/${exampleId}/approve`, {
       method: 'POST',
       body: JSON.stringify(approval),
+    })
+  }
+
+  // Query History Methods
+  async getQueryHistory(): Promise<QueryHistoryItem[]> {
+    if (this.demoMode) {
+      // Return demo history data
+      return [
+        {
+          id: 'query-1',
+          catalog_id: 'catalog-1',
+          engine: 'postgresql',
+          question: 'Show me the top 10 customers by total order amount',
+          generated_sql: 'SELECT c.customer_name, SUM(o.total_amount) as total_spent\nFROM customers c\nJOIN orders o ON c.id = o.customer_id\nGROUP BY c.id, c.customer_name\nORDER BY total_spent DESC\nLIMIT 10;',
+          explanation: 'This query joins the customers and orders tables to calculate the total amount spent by each customer, then orders them by total spending in descending order and limits to the top 10.',
+          syntax_valid: true,
+          status: 'completed',
+          generation_time_ms: 1250,
+          created_at: '2024-01-22T10:30:00Z',
+          tokens_used: 150,
+          catalog_name: 'E-commerce Database',
+          username: 'john_doe',
+          feedback: {
+            id: 'feedback-1',
+            rating: 'positive',
+            comment: 'Great query! The JOIN is efficient and the LIMIT clause is properly used.',
+            admin_username: 'admin',
+            created_at: '2024-01-22T11:00:00Z'
+          }
+        },
+        {
+          id: 'query-2',
+          catalog_id: 'catalog-1',
+          engine: 'postgresql',
+          question: 'Find all products with low inventory',
+          generated_sql: 'SELECT product_name, stock_quantity\nFROM products\nWHERE stock_quantity < 10\nORDER BY stock_quantity ASC;',
+          explanation: 'This query filters products where the stock quantity is less than 10 and orders them by stock quantity to show the most critical inventory levels first.',
+          syntax_valid: true,
+          status: 'completed',
+          generation_time_ms: 890,
+          created_at: '2024-01-22T09:15:00Z',
+          tokens_used: 95,
+          catalog_name: 'E-commerce Database',
+          username: 'john_doe'
+        }
+      ]
+    }
+
+    // Use the correct backend endpoint: /v1/history
+    const result = await this.request<{items: QueryHistoryItem[], total: number, limit: number, offset: number}>('/v1/history')
+    return result.items
+  }
+
+  async submitQueryFeedback(feedback: SubmitFeedbackRequest): Promise<void> {
+    if (this.demoMode) {
+      console.log('Demo mode: Feedback submitted:', feedback)
+      return
+    }
+
+    // Use the correct backend endpoint: /v1/history/{history_id}/feedback
+    await this.request<void>(`/v1/history/${feedback.query_id}/feedback`, {
+      method: 'POST',
+      body: JSON.stringify({
+        rating: feedback.rating,
+        comment: feedback.comment,
+        correctness: feedback.correctness,
+        completeness: feedback.completeness,
+        efficiency: feedback.efficiency,
+        suggested_sql: feedback.suggested_sql,
+        improvement_notes: feedback.improvement_notes
+      }),
     })
   }
 } 

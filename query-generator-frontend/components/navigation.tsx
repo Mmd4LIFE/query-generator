@@ -3,12 +3,12 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
-import { Database, Zap, Shield, Users, Menu } from "lucide-react"
+import { Database, Zap, Shield, Users, Menu, History } from "lucide-react"
 import { cn, getUserPermissions } from "@/lib/utils"
 
 interface NavigationProps {
   currentPage: string
-  onPageChange: (page: "generate" | "catalogs" | "security" | "users") => void
+  onPageChange: (page: "generate" | "catalogs" | "security" | "users" | "history") => void
   permissions: ReturnType<typeof getUserPermissions>
 }
 
@@ -20,6 +20,12 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
       id: "generate" as const,
       label: "Generate Query",
       icon: Zap,
+      requiresPermission: () => permissions.canGenerateQueries,
+    },
+    {
+      id: "history" as const,
+      label: "Query History",
+      icon: History,
       requiresPermission: () => permissions.canGenerateQueries,
     },
     {
@@ -42,7 +48,7 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
     },
   ]
 
-  const handlePageChange = (page: "generate" | "catalogs" | "security" | "users") => {
+  const handlePageChange = (page: "generate" | "catalogs" | "security" | "users" | "history") => {
     onPageChange(page)
     setIsOpen(false) // Close mobile menu after selection
   }

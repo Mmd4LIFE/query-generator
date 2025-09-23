@@ -11,12 +11,13 @@ import { Database, User, LogOut, Play } from "lucide-react"
 import { QueryGeneratorAPI } from "@/lib/api"
 import { Navigation } from "@/components/navigation"
 import { GenerateQueryPage } from "@/components/generate-query-page"
+import { QueryHistoryPage } from "@/components/query-history-page"
 import { ManageCatalogsPage } from "@/components/manage-catalogs-page"
 import { SecurityPoliciesPage } from "@/components/security-policies-page"
 import { UserSettingsPage } from "@/components/user-settings-page"
 import { getUserPermissions } from "@/lib/utils"
 
-type Page = "generate" | "catalogs" | "security" | "users"
+type Page = "generate" | "catalogs" | "security" | "users" | "history"
 
 export default function QueryGeneratorApp() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -259,6 +260,7 @@ export default function QueryGeneratorApp() {
         {/* Main Content */}
         <main className="pt-16 lg:pt-0 min-h-screen overflow-hidden">
           {currentPage === "generate" && <GenerateQueryPage api={api} />}
+          {currentPage === "history" && <QueryHistoryPage api={api} userProfile={userProfile} />}
           {currentPage === "catalogs" && (
             <ManageCatalogsPage 
               api={api} 
