@@ -4,77 +4,76 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  /* Updated color tokens to match the design brief for AI-powered SQL query generator */
-  --background: oklch(1 0 0); /* #ffffff - Main background color */
-  --foreground: oklch(0.35 0.08 200); /* #164e63 - Primary text color (cyan-800) */
-  --card: oklch(0.97 0.01 220); /* #f1f5f9 - Card background color */
-  --card-foreground: oklch(0.45 0.02 220); /* #475569 - Card text color (dark gray) */
+  /* QG Professional Brand Colors - Enterprise Data Platform */
+  --background: oklch(1 0 0); /* #ffffff - Clean white background */
+  --foreground: oklch(0.2 0.02 220); /* #1e293b - Deep navy text */
+  --card: oklch(0.98 0.005 220); /* #f8fafc - Subtle card background */
+  --card-foreground: oklch(0.25 0.02 220); /* #334155 - Card text */
   --popover: oklch(1 0 0); /* #ffffff - Popover background */
-  --popover-foreground: oklch(0.35 0.08 200); /* #164e63 - Popover text color */
-  --primary: oklch(0.65 0.15 270); /* #8b5cf6 - Call-to-action buttons (purple) */
-  --primary-foreground: oklch(1 0 0); /* #ffffff - Text on primary elements */
-  --secondary: oklch(0.6 0.15 50); /* #d97706 - Secondary actions (orange) */
-  --secondary-foreground: oklch(1 0 0); /* #ffffff - Text on secondary elements */
-  --muted: oklch(0.55 0.02 220); /* #6b7280 - Muted text */
-  /* Fixed muted-foreground to use proper contrasting color in light mode */
-  --muted-foreground: oklch(0.55 0.02 220); /* #6b7280 - Muted text color (gray-500) */
-  --accent: oklch(0.65 0.15 270); /* #8b5cf6 - Accents and highlights (purple) */
-  --accent-foreground: oklch(1 0 0); /* #ffffff - Text on accent elements */
-  --destructive: oklch(0.6 0.2 10); /* #f43f5e - Destructive actions */
-  --destructive-foreground: oklch(1 0 0); /* #ffffff - Text on destructive elements */
-  --border: oklch(0.92 0.01 220); /* #e5e7eb - Border colors */
-  --input: oklch(0.97 0.01 220); /* #f1f5f9 - Input fields */
-  --ring: oklch(0.65 0.15 270); /* #8b5cf6 - Ring for focused elements */
-  --chart-1: oklch(0.6 0.15 240); /* #3b82f6 - Chart color 1 (blue) */
-  --chart-2: oklch(0.65 0.15 160); /* #10b981 - Chart color 2 (green) */
-  --chart-3: oklch(0.7 0.15 80); /* #f59e0b - Chart color 3 (yellow) */
-  --chart-4: oklch(0.6 0.2 20); /* #ef4444 - Chart color 4 (red) */
-  --chart-5: oklch(0.6 0.2 280); /* #9333ea - Chart color 5 (purple) */
+  --popover-foreground: oklch(0.2 0.02 220); /* #1e293b - Popover text */
+  --primary: oklch(0.45 0.15 220); /* #1e3a8a - Deep navy primary (trust, enterprise) */
+  --primary-foreground: oklch(1 0 0); /* #ffffff - White text on primary */
+  --secondary: oklch(0.55 0.12 180); /* #0d9488 - Professional teal (innovation, data) */
+  --secondary-foreground: oklch(1 0 0); /* #ffffff - White text on secondary */
+  --muted: oklch(0.6 0.02 220); /* #64748b - Sophisticated gray */
+  --muted-foreground: oklch(0.45 0.02 220); /* #475569 - Muted text */
+  --accent: oklch(0.65 0.15 180); /* #06b6d4 - Bright cyan accent (tech, precision) */
+  --accent-foreground: oklch(1 0 0); /* #ffffff - White text on accent */
+  --destructive: oklch(0.55 0.2 15); /* #dc2626 - Crimson error (urgent) */
+  --destructive-foreground: oklch(1 0 0); /* #ffffff - White text on destructive */
+  --border: oklch(0.85 0.01 220); /* #cbd5e1 - Subtle borders */
+  --input: oklch(0.95 0.01 220); /* #f1f5f9 - Clean input fields */
+  --ring: oklch(0.45 0.15 220); /* #1e3a8a - Deep navy ring for focus */
+  --chart-1: oklch(0.5 0.15 220); /* #1e3a8a - Chart color 1 (navy) */
+  --chart-2: oklch(0.6 0.15 180); /* #0d9488 - Chart color 2 (teal) */
+  --chart-3: oklch(0.7 0.15 120); /* #059669 - Chart color 3 (forest green) */
+  --chart-4: oklch(0.55 0.2 15); /* #dc2626 - Chart color 4 (crimson) */
+  --chart-5: oklch(0.65 0.2 280); /* #7c3aed - Chart color 5 (purple) */
   --radius: 0.5rem; /* Corner rounding */
-  --sidebar: oklch(0.97 0.01 220); /* #f1f5f9 - Sidebar background */
-  --sidebar-foreground: oklch(0.35 0.08 200); /* #164e63 - Sidebar text color */
-  --sidebar-primary: oklch(1 0 0); /* #ffffff - Sidebar primary background */
-  --sidebar-primary-foreground: oklch(0.35 0.08 200); /* #164e63 - Sidebar primary text */
-  --sidebar-accent: oklch(0.65 0.15 270); /* #8b5cf6 - Sidebar accent color */
+  --sidebar: oklch(0.98 0.005 220); /* #f8fafc - Clean sidebar background */
+  --sidebar-foreground: oklch(0.25 0.02 220); /* #334155 - Sidebar text color */
+  --sidebar-primary: oklch(0.45 0.15 220); /* #1e3a8a - Sidebar primary background */
+  --sidebar-primary-foreground: oklch(1 0 0); /* #ffffff - Sidebar primary text */
+  --sidebar-accent: oklch(0.65 0.15 180); /* #06b6d4 - Sidebar accent color */
   --sidebar-accent-foreground: oklch(1 0 0); /* #ffffff - Text on sidebar accent */
-  --sidebar-border: oklch(0.92 0.01 220); /* #e5e7eb - Sidebar border color */
-  --sidebar-ring: oklch(0.65 0.15 270); /* #8b5cf6 - Sidebar ring for focused elements */
+  --sidebar-border: oklch(0.85 0.01 220); /* #cbd5e1 - Sidebar border color */
+  --sidebar-ring: oklch(0.45 0.15 220); /* #1e3a8a - Sidebar ring for focused elements */
 }
 
 .dark {
-  /* Updated dark mode colors to maintain contrast and readability */
-  --background: oklch(0.1 0.02 220); /* Dark background */
-  --foreground: oklch(0.95 0.01 200); /* Light text */
-  --card: oklch(0.15 0.02 220); /* Dark card background */
-  --card-foreground: oklch(0.9 0.01 200); /* Light card text */
-  --popover: oklch(0.1 0.02 220); /* Dark popover */
-  --popover-foreground: oklch(0.95 0.01 200); /* Light popover text */
-  --primary: oklch(0.7 0.15 270); /* Brighter purple for dark mode */
-  --primary-foreground: oklch(0.1 0.02 220); /* Dark text on primary */
-  --secondary: oklch(0.25 0.02 220); /* Dark secondary */
-  --secondary-foreground: oklch(0.95 0.01 200); /* Light text on secondary */
-  --muted: oklch(0.25 0.02 220); /* Dark muted */
-  --muted-foreground: oklch(0.7 0.01 200); /* Muted text */
-  --accent: oklch(0.25 0.02 220); /* Dark accent */
-  --accent-foreground: oklch(0.95 0.01 200); /* Light accent text */
-  --destructive: oklch(0.5 0.2 10); /* Darker destructive */
-  --destructive-foreground: oklch(0.9 0.1 10); /* Light destructive text */
-  --border: oklch(0.25 0.02 220); /* Dark border */
-  --input: oklch(0.25 0.02 220); /* Dark input */
-  --ring: oklch(0.5 0.1 220); /* Dark ring */
-  --chart-1: oklch(0.6 0.2 260); /* Dark mode chart colors */
-  --chart-2: oklch(0.7 0.15 160);
-  --chart-3: oklch(0.75 0.15 70);
-  --chart-4: oklch(0.65 0.2 300);
-  --chart-5: oklch(0.7 0.2 16);
-  --sidebar: oklch(0.12 0.02 220); /* Dark sidebar */
-  --sidebar-foreground: oklch(0.95 0.01 200); /* Light sidebar text */
-  --sidebar-primary: oklch(0.6 0.2 260); /* Sidebar primary */
-  --sidebar-primary-foreground: oklch(0.95 0.01 200); /* Light sidebar primary text */
-  --sidebar-accent: oklch(0.25 0.02 220); /* Dark sidebar accent */
-  --sidebar-accent-foreground: oklch(0.95 0.01 200); /* Light sidebar accent text */
-  --sidebar-border: oklch(0.25 0.02 220); /* Dark sidebar border */
-  --sidebar-ring: oklch(0.5 0.1 220); /* Dark sidebar ring */
+  /* QG Professional Dark Mode - Enterprise Data Platform */
+  --background: oklch(0.1 0.02 220); /* #0f172a - Deep navy background */
+  --foreground: oklch(0.9 0.02 220); /* #f1f5f9 - Light text */
+  --card: oklch(0.15 0.02 220); /* #1e293b - Dark card background */
+  --card-foreground: oklch(0.9 0.02 220); /* #f1f5f9 - Card text */
+  --popover: oklch(0.15 0.02 220); /* #1e293b - Dark popover */
+  --popover-foreground: oklch(0.9 0.02 220); /* #f1f5f9 - Popover text */
+  --primary: oklch(0.6 0.15 220); /* #3b82f6 - Brighter navy primary */
+  --primary-foreground: oklch(0.1 0.02 220); /* #0f172a - Dark text on primary */
+  --secondary: oklch(0.7 0.12 180); /* #14b8a6 - Brighter teal secondary */
+  --secondary-foreground: oklch(0.1 0.02 220); /* #0f172a - Dark text on secondary */
+  --muted: oklch(0.4 0.02 220); /* #64748b - Muted gray */
+  --muted-foreground: oklch(0.6 0.02 220); /* #94a3b8 - Muted text */
+  --accent: oklch(0.7 0.15 180); /* #22d3ee - Bright cyan accent */
+  --accent-foreground: oklch(0.1 0.02 220); /* #0f172a - Dark text on accent */
+  --destructive: oklch(0.6 0.2 15); /* #ef4444 - Bright red error */
+  --destructive-foreground: oklch(0.1 0.02 220); /* #0f172a - Dark text on destructive */
+  --border: oklch(0.2 0.02 220); /* #334155 - Dark borders */
+  --input: oklch(0.15 0.02 220); /* #1e293b - Dark input fields */
+  --ring: oklch(0.6 0.15 220); /* #3b82f6 - Navy ring for focus */
+  --chart-1: oklch(0.6 0.15 220); /* #3b82f6 - Chart color 1 (navy) */
+  --chart-2: oklch(0.7 0.15 180); /* #14b8a6 - Chart color 2 (teal) */
+  --chart-3: oklch(0.8 0.15 120); /* #10b981 - Chart color 3 (green) */
+  --chart-4: oklch(0.6 0.2 15); /* #ef4444 - Chart color 4 (red) */
+  --chart-5: oklch(0.7 0.2 280); /* #a855f7 - Chart color 5 (purple) */
+  --sidebar: oklch(0.12 0.02 220); /* #1e293b - Dark sidebar background */
+  --sidebar-foreground: oklch(0.8 0.02 220); /* #cbd5e1 - Sidebar text */
+  --sidebar-primary: oklch(0.6 0.15 220); /* #3b82f6 - Sidebar primary */
+  --sidebar-primary-foreground: oklch(0.1 0.02 220); /* #0f172a - Sidebar primary text */
+  --sidebar-accent: oklch(0.7 0.15 180); /* #22d3ee - Sidebar accent */
+  --sidebar-accent-foreground: oklch(0.1 0.02 220); /* #0f172a - Sidebar accent text */
+  --sidebar-border: oklch(0.2 0.02 220); /* #334155 - Sidebar border */
+  --sidebar-ring: oklch(0.6 0.15 220); /* #3b82f6 - Sidebar ring */
 }
 
 @theme inline {

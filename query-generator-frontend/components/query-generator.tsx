@@ -106,9 +106,9 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
           <div className="flex space-x-3 p-4 sm:p-6">
             {/* Profile Avatar */}
             <div className="flex-shrink-0">
-              <div className="w-10 h-10 sm:w-12 sm:h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center">
-                <Database className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
-              </div>
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 bg-gradient-to-br from-primary to-secondary rounded-full flex items-center justify-center">
+                    <Database className="w-5 h-5 sm:w-6 sm:h-6 text-primary-foreground" />
+                  </div>
             </div>
             
             {/* Main Content */}
@@ -148,11 +148,11 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
 
               {/* Generate Button */}
               <div className="flex justify-end">
-                <Button 
-                  onClick={handleGenerateQuery} 
-                  disabled={isLoading || !question.trim() || !selectedCatalog}
-                  className="bg-blue-500 hover:bg-blue-600 text-white px-4 sm:px-6 py-2 rounded-full font-semibold disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base"
-                >
+                    <Button 
+                      onClick={handleGenerateQuery} 
+                      disabled={isLoading || !question.trim() || !selectedCatalog}
+                      className="bg-primary hover:bg-primary/90 text-primary-foreground px-4 sm:px-6 py-2 rounded-full font-semibold disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base"
+                    >
                   {isLoading ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -187,9 +187,9 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
             <div className="flex space-x-3 p-4 sm:p-6">
               {/* Result Avatar */}
               <div className="flex-shrink-0">
-                <div className="w-10 h-10 sm:w-12 sm:h-12 bg-gradient-to-br from-green-500 to-blue-600 rounded-full flex items-center justify-center">
-                  <CheckCircle className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
-                </div>
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 bg-gradient-to-br from-secondary to-accent rounded-full flex items-center justify-center">
+                    <CheckCircle className="w-5 h-5 sm:w-6 sm:h-6 text-secondary-foreground" />
+                  </div>
               </div>
               
               {/* Result Content */}
