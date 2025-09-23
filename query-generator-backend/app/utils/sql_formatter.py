@@ -113,10 +113,10 @@ def format_sql(sql: str, add_comment: bool = True) -> str:
         flags=re.IGNORECASE
     )
     
-    # Format LIMIT clause (keep on same line as previous clause)
+    # Format LIMIT clause (put on its own line)
     formatted_sql = re.sub(
         r'\s+LIMIT\s+', 
-        ' LIMIT ', 
+        '\nLIMIT ', 
         formatted_sql, 
         flags=re.IGNORECASE
     )
