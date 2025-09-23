@@ -78,8 +78,8 @@
 }
 
 @theme inline {
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-ubuntu);
+  --font-mono: var(--font-ubuntu-mono);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -124,6 +124,71 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    font-optical-sizing: auto;
+    font-weight: 400;
+  }
+  
+  /* Typography enhancements for Ubuntu */
+  h1, h2, h3, h4, h5, h6 {
+    font-feature-settings: "rlig" 1, "calt" 1;
+    letter-spacing: -0.01em;
+    font-weight: 500;
+  }
+  
+  h1 {
+    @apply text-4xl leading-tight;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  
+  h2 {
+    @apply text-3xl leading-tight;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+  }
+  
+  h3 {
+    @apply text-2xl leading-snug;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+  
+  h4 {
+    @apply text-xl leading-snug;
+    font-weight: 500;
+  }
+  
+  h5 {
+    @apply text-lg leading-snug;
+    font-weight: 500;
+  }
+  
+  h6 {
+    @apply text-base leading-snug;
+    font-weight: 500;
+  }
+  
+  p {
+    @apply leading-relaxed;
+    font-weight: 400;
+  }
+  
+  /* Code blocks with Ubuntu Mono */
+  code {
+    @apply font-mono text-sm;
+    font-feature-settings: "liga" 1, "calt" 1;
+    font-weight: 400;
+  }
+  
+  /* Button and interactive elements */
+  button {
+    font-weight: 500;
+  }
+  
+  /* Input fields */
+  input, textarea {
+    font-weight: 400;
   }
   
   /* Only apply full width rules to authenticated main content */
