@@ -1,9 +1,7 @@
 "use client"
 
-import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
-import { Database, Zap, Shield, Users, Menu, History } from "lucide-react"
+import { Database, Zap, Shield, Users, History } from "lucide-react"
 import { cn, getUserPermissions } from "@/lib/utils"
 
 interface NavigationProps {
@@ -13,7 +11,6 @@ interface NavigationProps {
 }
 
 export function Navigation({ currentPage, onPageChange, permissions }: NavigationProps) {
-  const [isOpen, setIsOpen] = useState(false)
 
   const navItems = [
     {
@@ -50,7 +47,6 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
 
   const handlePageChange = (page: "generate" | "catalogs" | "security" | "users" | "history") => {
     onPageChange(page)
-    setIsOpen(false) // Close mobile menu after selection
   }
 
   const NavContent = () => (
@@ -81,21 +77,31 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
         <NavContent />
       </nav>
 
-      {/* Mobile Navigation */}
-      <div className="lg:hidden">
-        <Sheet open={isOpen} onOpenChange={setIsOpen}>
-          <SheetTrigger asChild>
-            <Button variant="outline" size="sm" className="fixed top-16 left-4 z-50 lg:hidden shadow-lg">
-              <Menu className="h-4 w-4" />
-            </Button>
-          </SheetTrigger>
-          <SheetContent side="left" className="w-72 p-4">
-            <div className="mt-8">
-              <NavContent />
-            </div>
-          </SheetContent>
-        </Sheet>
-      </div>
+      {/* Mobile Navigation - Icon Only */}
+      <nav className="lg:hidden fixed left-0 top-16 bottom-0 w-16 bg-card border-r z-40">
+        <div className="flex flex-col items-center py-4 space-y-2">
+          {navItems.map((item) => {
+            if (!item.requiresPermission()) return null
+
+            const Icon = item.icon
+            return (
+              <Button
+                key={item.id}
+                variant={currentPage === item.id ? "default" : "ghost"}
+                size="sm"
+                className={cn(
+                  "w-10 h-10 p-0 rounded-lg",
+                  currentPage === item.id ? "" : "bg-transparent hover:bg-muted"
+                )}
+                onClick={() => handlePageChange(item.id)}
+                title={item.label}
+              >
+                <Icon className="h-5 w-5" />
+              </Button>
+            )
+          })}
+        </div>
+      </nav>
     </>
   )
 }

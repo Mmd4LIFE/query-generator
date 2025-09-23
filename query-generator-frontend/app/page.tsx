@@ -250,7 +250,7 @@ export default function QueryGeneratorApp() {
         </div>
       </header>
 
-      <div className="grid grid-cols-[256px_1fr] min-h-screen lg:grid-cols-[256px_1fr] grid-cols-1">
+      <div className="flex min-h-screen">
         <Navigation 
           currentPage={currentPage} 
           onPageChange={setCurrentPage} 
@@ -258,7 +258,7 @@ export default function QueryGeneratorApp() {
         />
 
         {/* Main Content */}
-        <main className="pt-16 lg:pt-0 min-h-screen overflow-hidden">
+        <main className="flex-1 pt-16 lg:pt-0 min-h-screen overflow-hidden lg:ml-0 ml-16">
           {currentPage === "generate" && <QueryGenerator api={api} />}
           {currentPage === "history" && <QueryHistoryPage api={api} userProfile={userProfile} />}
           {currentPage === "catalogs" && (
