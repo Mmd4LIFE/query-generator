@@ -45,6 +45,7 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
       MAX_CHUNKS: ${MAX_CHUNKS:-12}
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-3072}
       BATCH_SIZE: ${BATCH_SIZE:-64}
@@ -75,7 +76,9 @@ services:
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     environment:
-      NODE_ENV: ${NODE_ENV:-production}
+      NODE_ENV: production
+      HOST: ${HOST:-localhost}
+      BACKEND_PORT: ${BACKEND_PORT:-8000}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://${HOST:-localhost}:${BACKEND_PORT:-8000}}
       NEXT_PUBLIC_HOST: ${HOST:-localhost}
       NEXT_PUBLIC_BACKEND_PORT: ${BACKEND_PORT:-8000}

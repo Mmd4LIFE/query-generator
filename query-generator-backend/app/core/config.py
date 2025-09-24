@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     # Application
     environment: str = Field(default="development", env="ENVIRONMENT")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    cors_origins: str = Field(default="", env="CORS_ORIGINS")
+    
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Parse CORS origins from comma-separated string"""
+        if not self.cors_origins:
+            return []
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
     
     # Embedding settings
     max_chunks: int = Field(default=12, env="MAX_CHUNKS")
