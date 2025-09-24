@@ -79,7 +79,7 @@ async def create_admin_user():
         print("   Role: admin")
         print("")
         print("⚠️  IMPORTANT: Change the password after first login!")
-        print(f"   You can now login at: http://localhost:{os.getenv('BACKEND_PORT', '8000')}/docs")
+        print(f"   You can now login at: http://{os.getenv('HOST', 'localhost')}:{os.getenv('BACKEND_PORT', '8000')}/docs")
         
     except Exception as e:
         print(f"❌ Error creating admin user: {e}")

@@ -25,7 +25,7 @@ const getConfig = (): AppConfig => {
     api: {
       baseUrl: process.env.NEXT_PUBLIC_API_BASE_URL || 
                process.env.NEXT_PUBLIC_API_URL || 
-               `http://localhost:${process.env.NEXT_PUBLIC_BACKEND_PORT || '8000'}`,
+               `http://${process.env.NEXT_PUBLIC_HOST || 'localhost'}:${process.env.NEXT_PUBLIC_BACKEND_PORT || '8000'}`,
       timeout: parseInt(process.env.NEXT_PUBLIC_API_TIMEOUT || '30000'),
       retryAttempts: parseInt(process.env.NEXT_PUBLIC_API_RETRY_ATTEMPTS || '3'),
       retryDelay: parseInt(process.env.NEXT_PUBLIC_API_RETRY_DELAY || '1000'),

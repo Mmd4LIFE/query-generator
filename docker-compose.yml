@@ -31,6 +31,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-qg}
       POSTGRES_USER: ${POSTGRES_USER:-qg}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qg}
+      HOST: ${HOST:-localhost}
       BACKEND_PORT: ${BACKEND_PORT:-8000}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
@@ -75,7 +76,8 @@ services:
       - "${FRONTEND_PORT:-3000}:3000"
     environment:
       NODE_ENV: ${NODE_ENV:-production}
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:${BACKEND_PORT:-8000}}
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://${HOST:-localhost}:${BACKEND_PORT:-8000}}
+      NEXT_PUBLIC_HOST: ${HOST:-localhost}
       NEXT_PUBLIC_BACKEND_PORT: ${BACKEND_PORT:-8000}
       NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-false}
       NEXT_PUBLIC_API_TIMEOUT: ${NEXT_PUBLIC_API_TIMEOUT:-30000}

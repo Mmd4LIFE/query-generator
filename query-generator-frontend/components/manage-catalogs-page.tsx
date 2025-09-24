@@ -145,11 +145,15 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
       console.log('Sample columns:', columns.slice(0, 3))
       setParsedColumns(columns)
 
-      // Generate preview JSON
+      // Generate preview JSON if catalog name is available
       if (catalogName && columns.length > 0) {
         const catalogJson = convertColumnsToCatalogJSON(columns, catalogName, selectedEngine, description)
         setPreviewJson(catalogJson)
         console.log('Generated catalog JSON preview')
+      } else if (columns.length > 0) {
+        // Clear preview JSON if no catalog name is set yet
+        setPreviewJson(null)
+        console.log('CSV parsed successfully, waiting for catalog name to generate preview')
       }
 
       setError("")
@@ -680,7 +684,9 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
                           <div className="space-y-2">
                             <Label>Generated Catalog JSON:</Label>
                             <pre className="text-xs bg-gray-50 p-3 rounded max-h-64 overflow-y-auto">
-                              {previewJson ? JSON.stringify(previewJson, null, 2) : 'Generate preview by entering catalog name'}
+                              {previewJson ? JSON.stringify(previewJson, null, 2) : 
+                               parsedColumns.length > 0 ? 'Enter catalog name above to generate preview' : 
+                               'Upload CSV file to generate preview'}
                             </pre>
                           </div>
                         </TabsContent>
