@@ -1,4 +1,3 @@
--- Initialize Query Generator Database
 -- This script runs automatically when the PostgreSQL container starts
 
 -- Enable required extensions
