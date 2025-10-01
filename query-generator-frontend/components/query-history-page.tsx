@@ -226,7 +226,7 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
         </div>
 
         {/* Query List */}
-        <ScrollArea className="flex-1">
+        <ScrollArea className="h-[calc(100vh-200px)] p-2">
           {isLoading ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-8 w-8 animate-spin" />
@@ -241,7 +241,7 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
               </p>
             </div>
           ) : (
-            <div className="space-y-2 p-2">
+            <div className="space-y-2">
               {filteredHistory.map((item) => (
                 <div
                   key={item.id}
