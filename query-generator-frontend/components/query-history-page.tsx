@@ -37,6 +37,7 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false)
   const [queryFeedback, setQueryFeedback] = useState<QueryFeedback[]>([])
   const [isLoadingFeedback, setIsLoadingFeedback] = useState(false)
+  const [copied, setCopied] = useState(false)
   
   // Email-style layout state
   const [searchQuery, setSearchQuery] = useState("")
@@ -123,7 +124,8 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
   const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
-      toast.success('SQL copied to clipboard!')
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
     } catch (err) {
       console.error('Failed to copy to clipboard:', err)
       toast.error('Failed to copy to clipboard')
@@ -328,13 +330,19 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      copyToClipboard(selectedQuery.generated_sql || '')
-                      toast.success('SQL copied to clipboard!')
-                    }}
+                    onClick={() => copyToClipboard(selectedQuery.generated_sql || '')}
                   >
-                    <Copy className="w-4 h-4 mr-2" />
-                    Copy SQL
+                    {copied ? (
+                      <>
+                        <CheckCircle className="w-4 h-4 mr-2" />
+                        Copied!
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-4 h-4 mr-2" />
+                        Copy SQL
+                      </>
+                    )}
                   </Button>
                 </div>
               </div>
