@@ -441,124 +441,169 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                               Add Feedback
                             </Button>
                           </DialogTrigger>
-                          <DialogContent className="sm:max-w-md">
+                          <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
                             <DialogHeader>
-                              <DialogTitle>Provide Feedback</DialogTitle>
+                              <DialogTitle className="flex items-center gap-2">
+                                <MessageSquare className="w-5 h-5" />
+                                Provide Feedback
+                              </DialogTitle>
                               <DialogDescription>
-                                Rate and comment on this generated query.
+                                Help improve query generation by providing detailed feedback on this query.
                               </DialogDescription>
                             </DialogHeader>
-                            <div className="space-y-4">
-                              <div>
-                                <label className="text-sm font-medium">Overall Rating (1-5)</label>
-                                <div className="flex space-x-2 mt-2">
+                            
+                            <div className="space-y-6 py-4">
+                              {/* Overall Rating Section */}
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <label className="text-sm font-semibold">Overall Rating</label>
+                                  <span className="text-xs text-muted-foreground">Required</span>
+                                </div>
+                                <div className="flex items-center space-x-2">
                                   {[1, 2, 3, 4, 5].map((rating) => (
-                                    <Button
+                                    <button
                                       key={rating}
-                                      variant={feedbackRating === rating ? 'default' : 'outline'}
-                                      size="sm"
                                       onClick={() => setFeedbackRating(rating)}
-                                      className="w-10 h-10 p-0"
+                                      className={`w-12 h-12 rounded-full border-2 transition-all duration-200 flex items-center justify-center text-sm font-medium ${
+                                        feedbackRating === rating
+                                          ? 'border-primary bg-primary text-primary-foreground shadow-md'
+                                          : 'border-muted-foreground/30 hover:border-primary/50 hover:bg-primary/5'
+                                      }`}
                                     >
                                       {rating}
-                                    </Button>
+                                    </button>
                                   ))}
                                 </div>
-                                <div className="text-xs text-muted-foreground mt-1">
-                                  {feedbackRating === 1 && 'Poor'}
-                                  {feedbackRating === 2 && 'Below Average'}
-                                  {feedbackRating === 3 && 'Average'}
-                                  {feedbackRating === 4 && 'Good'}
-                                  {feedbackRating === 5 && 'Excellent'}
+                                <div className="text-sm text-muted-foreground">
+                                  {feedbackRating === 1 && '❌ Poor - Query is incorrect or unusable'}
+                                  {feedbackRating === 2 && '⚠️ Below Average - Query has significant issues'}
+                                  {feedbackRating === 3 && '⚖️ Average - Query works but could be improved'}
+                                  {feedbackRating === 4 && '✅ Good - Query is well-structured and functional'}
+                                  {feedbackRating === 5 && '🌟 Excellent - Query is optimal and efficient'}
                                 </div>
                               </div>
 
-                              <div className="grid grid-cols-3 gap-4">
-                                <div>
-                                  <label className="text-sm font-medium">Correctness (1-5)</label>
-                                  <div className="flex space-x-1 mt-2">
-                                    {[1, 2, 3, 4, 5].map((rating) => (
-                                      <Button
-                                        key={rating}
-                                        variant={feedbackCorrectness === rating ? 'default' : 'outline'}
-                                        size="sm"
-                                        onClick={() => setFeedbackCorrectness(rating)}
-                                        className="w-8 h-8 p-0 text-xs"
-                                      >
-                                        {rating}
-                                      </Button>
-                                    ))}
-                                  </div>
-                                </div>
+                              <Separator />
+
+                              {/* Detailed Ratings Section */}
+                              <div className="space-y-4">
+                                <h4 className="text-sm font-semibold text-muted-foreground">Detailed Assessment</h4>
                                 
-                                <div>
-                                  <label className="text-sm font-medium">Completeness (1-5)</label>
-                                  <div className="flex space-x-1 mt-2">
-                                    {[1, 2, 3, 4, 5].map((rating) => (
-                                      <Button
-                                        key={rating}
-                                        variant={feedbackCompleteness === rating ? 'default' : 'outline'}
-                                        size="sm"
-                                        onClick={() => setFeedbackCompleteness(rating)}
-                                        className="w-8 h-8 p-0 text-xs"
-                                      >
-                                        {rating}
-                                      </Button>
-                                    ))}
+                                <div className="grid gap-4">
+                                  {/* Correctness */}
+                                  <div className="space-y-2">
+                                    <div className="flex items-center justify-between">
+                                      <label className="text-sm font-medium">Correctness</label>
+                                      <span className="text-xs text-muted-foreground">Is the SQL syntactically and logically correct?</span>
+                                    </div>
+                                    <div className="flex items-center space-x-1">
+                                      {[1, 2, 3, 4, 5].map((rating) => (
+                                        <button
+                                          key={rating}
+                                          onClick={() => setFeedbackCorrectness(rating)}
+                                          className={`w-8 h-8 rounded-full border transition-all duration-200 flex items-center justify-center text-xs ${
+                                            feedbackCorrectness === rating
+                                              ? 'border-primary bg-primary text-primary-foreground'
+                                              : 'border-muted-foreground/30 hover:border-primary/50'
+                                          }`}
+                                        >
+                                          {rating}
+                                        </button>
+                                      ))}
+                                    </div>
                                   </div>
-                                </div>
-                                
-                                <div>
-                                  <label className="text-sm font-medium">Efficiency (1-5)</label>
-                                  <div className="flex space-x-1 mt-2">
-                                    {[1, 2, 3, 4, 5].map((rating) => (
-                                      <Button
-                                        key={rating}
-                                        variant={feedbackEfficiency === rating ? 'default' : 'outline'}
-                                        size="sm"
-                                        onClick={() => setFeedbackEfficiency(rating)}
-                                        className="w-8 h-8 p-0 text-xs"
-                                      >
-                                        {rating}
-                                      </Button>
-                                    ))}
+
+                                  {/* Completeness */}
+                                  <div className="space-y-2">
+                                    <div className="flex items-center justify-between">
+                                      <label className="text-sm font-medium">Completeness</label>
+                                      <span className="text-xs text-muted-foreground">Does it fully address the question?</span>
+                                    </div>
+                                    <div className="flex items-center space-x-1">
+                                      {[1, 2, 3, 4, 5].map((rating) => (
+                                        <button
+                                          key={rating}
+                                          onClick={() => setFeedbackCompleteness(rating)}
+                                          className={`w-8 h-8 rounded-full border transition-all duration-200 flex items-center justify-center text-xs ${
+                                            feedbackCompleteness === rating
+                                              ? 'border-primary bg-primary text-primary-foreground'
+                                              : 'border-muted-foreground/30 hover:border-primary/50'
+                                          }`}
+                                        >
+                                          {rating}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  {/* Efficiency */}
+                                  <div className="space-y-2">
+                                    <div className="flex items-center justify-between">
+                                      <label className="text-sm font-medium">Efficiency</label>
+                                      <span className="text-xs text-muted-foreground">Is the query optimized for performance?</span>
+                                    </div>
+                                    <div className="flex items-center space-x-1">
+                                      {[1, 2, 3, 4, 5].map((rating) => (
+                                        <button
+                                          key={rating}
+                                          onClick={() => setFeedbackEfficiency(rating)}
+                                          className={`w-8 h-8 rounded-full border transition-all duration-200 flex items-center justify-center text-xs ${
+                                            feedbackEfficiency === rating
+                                              ? 'border-primary bg-primary text-primary-foreground'
+                                              : 'border-muted-foreground/30 hover:border-primary/50'
+                                          }`}
+                                        >
+                                          {rating}
+                                        </button>
+                                      ))}
+                                    </div>
                                   </div>
                                 </div>
                               </div>
 
-                              <div>
-                                <label className="text-sm font-medium">Comment</label>
+                              <Separator />
+
+                              {/* Comment Section */}
+                              <div className="space-y-2">
+                                <label className="text-sm font-semibold">Feedback Comment</label>
                                 <Textarea
-                                  placeholder="Enter your feedback comment..."
+                                  placeholder="Provide specific feedback about what works well and what could be improved..."
                                   value={feedbackComment}
                                   onChange={(e) => setFeedbackComment(e.target.value)}
-                                  rows={3}
-                                  className="mt-2"
+                                  rows={4}
+                                  className="resize-none"
                                 />
                               </div>
 
-                              <div>
-                                <label className="text-sm font-medium">Suggested SQL (Optional)</label>
+                              {/* Suggested SQL Section */}
+                              <div className="space-y-2">
+                                <label className="text-sm font-semibold">Suggested SQL (Optional)</label>
                                 <Textarea
-                                  placeholder="Enter improved SQL if you have suggestions..."
+                                  placeholder="If you have a better version of the SQL, paste it here..."
                                   value={feedbackSuggestedSql}
                                   onChange={(e) => setFeedbackSuggestedSql(e.target.value)}
-                                  rows={4}
-                                  className="mt-2 font-mono text-sm"
+                                  rows={6}
+                                  className="font-mono text-sm resize-none"
                                 />
                               </div>
 
-                              <div>
-                                <label className="text-sm font-medium">Improvement Notes (Optional)</label>
+                              {/* Improvement Notes Section */}
+                              <div className="space-y-2">
+                                <label className="text-sm font-semibold">Improvement Notes (Optional)</label>
                                 <Textarea
-                                  placeholder="Additional notes for improvement..."
+                                  placeholder="Additional suggestions for improving query generation..."
                                   value={feedbackImprovementNotes}
                                   onChange={(e) => setFeedbackImprovementNotes(e.target.value)}
                                   rows={3}
-                                  className="mt-2"
+                                  className="resize-none"
                                 />
                               </div>
-                              <div className="flex justify-end space-x-2">
+                            </div>
+                            <div className="flex justify-between items-center pt-4 border-t">
+                              <div className="text-xs text-muted-foreground">
+                                All ratings are required. Comment is optional but recommended.
+                              </div>
+                              <div className="flex space-x-3">
                                 <Button
                                   variant="outline"
                                   onClick={() => {
@@ -576,7 +621,8 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                                 </Button>
                                 <Button
                                   onClick={() => submitFeedback(selectedQuery.id)}
-                                  disabled={isSubmittingFeedback}
+                                  disabled={isSubmittingFeedback || !feedbackRating || !feedbackCorrectness || !feedbackCompleteness || !feedbackEfficiency}
+                                  className="min-w-[120px]"
                                 >
                                   {isSubmittingFeedback ? (
                                     <>
