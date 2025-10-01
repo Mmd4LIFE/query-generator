@@ -73,6 +73,18 @@ services:
     build:
       context: ./query-generator-frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://${HOST:-localhost}:${BACKEND_PORT:-8000}}
+        NEXT_PUBLIC_HOST: ${HOST:-localhost}
+        NEXT_PUBLIC_BACKEND_PORT: ${BACKEND_PORT:-8000}
+        NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-false}
+        NEXT_PUBLIC_API_TIMEOUT: ${NEXT_PUBLIC_API_TIMEOUT:-30000}
+        NEXT_PUBLIC_API_RETRY_ATTEMPTS: ${NEXT_PUBLIC_API_RETRY_ATTEMPTS:-3}
+        NEXT_PUBLIC_API_RETRY_DELAY: ${NEXT_PUBLIC_API_RETRY_DELAY:-1000}
+        NEXT_PUBLIC_ANALYTICS_ENABLED: ${NEXT_PUBLIC_ANALYTICS_ENABLED:-false}
+        NEXT_PUBLIC_FEEDBACK_ENABLED: ${NEXT_PUBLIC_FEEDBACK_ENABLED:-true}
+        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Query Generator}
+        NEXT_PUBLIC_APP_DESCRIPTION: ${NEXT_PUBLIC_APP_DESCRIPTION:-AI-powered SQL query generation from natural language}
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     environment:
