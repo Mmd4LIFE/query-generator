@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps.auth import require_user, User
 from app.deps.db import get_db
+from app.models.auth import User as UserModel
 from app.models.history import QueryFeedback, QueryHistory
 
 logger = structlog.get_logger()
@@ -59,6 +60,7 @@ class FeedbackResponse(BaseModel):
     suggested_sql: Optional[str]
     improvement_notes: Optional[str]
     created_at: str
+    username: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -268,7 +270,8 @@ async def create_feedback(
         efficiency=feedback.efficiency,
         suggested_sql=feedback.suggested_sql,
         improvement_notes=feedback.improvement_notes,
-        created_at=feedback.created_at.isoformat()
+        created_at=feedback.created_at.isoformat(),
+        username=current_user.username
     )
 
 
@@ -318,7 +321,8 @@ async def get_feedback(
         efficiency=feedback.efficiency,
         suggested_sql=feedback.suggested_sql,
         improvement_notes=feedback.improvement_notes,
-        created_at=feedback.created_at.isoformat()
+        created_at=feedback.created_at.isoformat(),
+        username=current_user.username
     )
 
 
@@ -344,12 +348,14 @@ async def get_all_feedback(
             detail="History item not found"
         )
     
-    # Get all feedback for this history item
-    stmt = select(QueryFeedback).where(
+    # Get all feedback for this history item with user information
+    stmt = select(QueryFeedback, UserModel.username).join(
+        UserModel, QueryFeedback.user_id == UserModel.id
+    ).where(
         QueryFeedback.history_id == history_id
     ).order_by(QueryFeedback.created_at.desc())
     result = await db.execute(stmt)
-    feedback_list = result.scalars().all()
+    feedback_with_users = result.all()
     
     return [
         FeedbackResponse(
@@ -362,7 +368,8 @@ async def get_all_feedback(
             efficiency=feedback.efficiency,
             suggested_sql=feedback.suggested_sql,
             improvement_notes=feedback.improvement_notes,
-            created_at=feedback.created_at.isoformat()
+            created_at=feedback.created_at.isoformat(),
+            username=username
         )
-        for feedback in feedback_list
+        for feedback, username in feedback_with_users
     ] 
