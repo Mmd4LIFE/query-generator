@@ -10,13 +10,15 @@ import uuid
 from datetime import datetime
 
 import asyncpg
-from passlib.context import CryptContext
-
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+import bcrypt
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    # Ensure password is not longer than 72 bytes for bcrypt
+    if len(password.encode('utf-8')) > 72:
+        password = password[:72]
+    # Use bcrypt directly to avoid passlib version issues
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
 async def create_admin_user():
     """Create an initial admin user"""

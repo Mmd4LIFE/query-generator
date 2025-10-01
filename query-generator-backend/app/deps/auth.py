@@ -9,7 +9,7 @@ import structlog
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -20,7 +20,6 @@ from app.models.auth import User, UserRole
 
 logger = structlog.get_logger()
 security = HTTPBearer()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Role priority for single role system
 ROLE_PRIORITY = {
@@ -36,12 +35,19 @@ ROLE_PRIORITY = {
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a plain password against its hash"""
-    return pwd_context.verify(plain_password, hashed_password)
+    # Ensure password is not longer than 72 bytes for bcrypt
+    if len(plain_password.encode('utf-8')) > 72:
+        plain_password = plain_password[:72]
+    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 
 def get_password_hash(password: str) -> str:
     """Generate password hash"""
-    return pwd_context.hash(password)
+    # Ensure password is not longer than 72 bytes for bcrypt
+    if len(password.encode('utf-8')) > 72:
+        password = password[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
