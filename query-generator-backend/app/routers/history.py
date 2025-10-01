@@ -14,6 +14,7 @@ from app.deps.auth import require_user, User
 from app.deps.db import get_db
 from app.models.auth import User as UserModel
 from app.models.history import QueryFeedback, QueryHistory
+from app.models.catalog import Catalog
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -32,6 +33,7 @@ class HistoryResponse(BaseModel):
     generation_time_ms: Optional[float]
     created_at: str
     tokens_used: Optional[int]
+    catalog_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -86,7 +88,7 @@ async def get_history(
     """Get query history for current user"""
     
     # Base query - users can only see their own history
-    stmt = select(QueryHistory).where(QueryHistory.user_id == current_user.id)
+    stmt = select(QueryHistory, Catalog).join(Catalog, QueryHistory.catalog_id == Catalog.id).where(QueryHistory.user_id == current_user.id)
     count_stmt = select(func.count(QueryHistory.id)).where(QueryHistory.user_id == current_user.id)
     
     # Apply filters
@@ -109,14 +111,14 @@ async def get_history(
     total_result = await db.execute(count_stmt)
     total = total_result.scalar()
     
-    # Get items
+    # Get items with catalog information
     stmt = stmt.order_by(QueryHistory.created_at.desc()).limit(limit).offset(offset)
     result = await db.execute(stmt)
-    histories = result.scalars().all()
+    histories_with_catalogs = result.all()
     
     # Format response
     history_responses = []
-    for history in histories:
+    for history, catalog in histories_with_catalogs:
         history_responses.append(HistoryResponse(
             id=history.id,
             catalog_id=history.catalog_id,
@@ -128,7 +130,8 @@ async def get_history(
             status=history.status,
             generation_time_ms=history.generation_time_ms,
             created_at=history.created_at.isoformat(),
-            tokens_used=history.total_tokens
+            tokens_used=history.total_tokens,
+            catalog_name=catalog.catalog_name
         ))
     
     return HistoryList(
@@ -147,18 +150,22 @@ async def get_history_item(
 ):
     """Get specific history item"""
     
-    stmt = select(QueryHistory).where(
+    stmt = select(QueryHistory, Catalog).join(
+        Catalog, QueryHistory.catalog_id == Catalog.id
+    ).where(
         QueryHistory.id == history_id,
         QueryHistory.user_id == current_user.id  # Users can only see their own history
     )
     result = await db.execute(stmt)
-    history = result.scalar_one_or_none()
+    history_with_catalog = result.first()
     
-    if not history:
+    if not history_with_catalog:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="History item not found"
         )
+    
+    history, catalog = history_with_catalog
     
     return HistoryResponse(
         id=history.id,
@@ -171,7 +178,8 @@ async def get_history_item(
         status=history.status,
         generation_time_ms=history.generation_time_ms,
         created_at=history.created_at.isoformat(),
-        tokens_used=history.total_tokens
+        tokens_used=history.total_tokens,
+        catalog_name=catalog.catalog_name
     )
 
 
