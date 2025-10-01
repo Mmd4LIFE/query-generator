@@ -13,7 +13,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer"
 import { History, Copy, CheckCircle, AlertCircle, Loader2, MessageSquare, Star, ThumbsUp, ThumbsDown, Eye, Calendar, User, Database } from "lucide-react"
 import { toast } from "sonner"
-import type { QueryGeneratorAPI, QueryHistoryItem } from "@/lib/api"
+import type { QueryGeneratorAPI, QueryHistoryItem, QueryFeedback } from "@/lib/api"
 import { getUserPermissions } from "@/lib/utils"
 
 interface QueryHistoryPageProps {
@@ -28,9 +28,16 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
   const [feedbackDialog, setFeedbackDialog] = useState<string | null>(null)
   const [feedbackComment, setFeedbackComment] = useState("")
   const [feedbackRating, setFeedbackRating] = useState<number>(3) // Default to 3 (neutral)
+  const [feedbackCorrectness, setFeedbackCorrectness] = useState<number>(3)
+  const [feedbackCompleteness, setFeedbackCompleteness] = useState<number>(3)
+  const [feedbackEfficiency, setFeedbackEfficiency] = useState<number>(3)
+  const [feedbackSuggestedSql, setFeedbackSuggestedSql] = useState("")
+  const [feedbackImprovementNotes, setFeedbackImprovementNotes] = useState("")
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false)
   const [selectedQuery, setSelectedQuery] = useState<QueryHistoryItem | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [queryFeedback, setQueryFeedback] = useState<QueryFeedback[]>([])
+  const [isLoadingFeedback, setIsLoadingFeedback] = useState(false)
 
   const permissions = getUserPermissions(userProfile)
 
@@ -70,9 +77,26 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
     }
   }
 
-  const openQueryDetails = (query: QueryHistoryItem) => {
+  const openQueryDetails = async (query: QueryHistoryItem) => {
     setSelectedQuery(query)
     setDrawerOpen(true)
+    // Don't load feedback immediately - wait for user to click Feedback tab
+    setQueryFeedback([])
+  }
+
+  const loadQueryFeedback = async (historyId: string) => {
+    console.log('🔄 Loading feedback for history ID:', historyId)
+    setIsLoadingFeedback(true)
+    try {
+      const feedback = await api.getQueryFeedback(historyId)
+      console.log('✅ Feedback loaded:', feedback)
+      setQueryFeedback(feedback)
+    } catch (err: any) {
+      console.error("❌ Failed to load feedback:", err)
+      setQueryFeedback([])
+    } finally {
+      setIsLoadingFeedback(false)
+    }
   }
 
   const submitFeedback = async (queryId: string) => {
@@ -88,13 +112,23 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
       await api.submitQueryFeedback({
         query_id: queryId,
         rating: feedbackRating,
-        comment: feedbackComment.trim()
+        comment: feedbackComment.trim(),
+        correctness: feedbackCorrectness,
+        completeness: feedbackCompleteness,
+        efficiency: feedbackEfficiency,
+        suggested_sql: feedbackSuggestedSql.trim() || undefined,
+        improvement_notes: feedbackImprovementNotes.trim() || undefined
       })
       
       setFeedbackDialog(null)
       setFeedbackComment("")
       setFeedbackRating(3)
-      await loadHistory() // Reload to show updated feedback
+      setFeedbackCorrectness(3)
+      setFeedbackCompleteness(3)
+      setFeedbackEfficiency(3)
+      setFeedbackSuggestedSql("")
+      setFeedbackImprovementNotes("")
+      await loadQueryFeedback(queryId) // Reload feedback for this query
     } catch (err: any) {
       console.error("Failed to submit feedback:", err)
       setError("Failed to submit feedback. Please try again.")
@@ -107,26 +141,25 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
     return new Date(dateString).toLocaleString()
   }
 
-  const getRatingIcon = (rating: string) => {
-    switch (rating) {
-      case 'positive':
-        return <ThumbsUp className="w-4 h-4 text-green-500" />
-      case 'negative':
-        return <ThumbsDown className="w-4 h-4 text-red-500" />
-      default:
-        return <MessageSquare className="w-4 h-4 text-gray-500" />
-    }
+  const getRatingIcon = (rating?: number) => {
+    if (!rating) return <MessageSquare className="w-4 h-4 text-gray-500" />
+    if (rating >= 4) return <ThumbsUp className="w-4 h-4 text-green-500" />
+    if (rating <= 2) return <ThumbsDown className="w-4 h-4 text-red-500" />
+    return <MessageSquare className="w-4 h-4 text-yellow-500" />
   }
 
-  const getRatingColor = (rating: string) => {
-    switch (rating) {
-      case 'positive':
-        return 'bg-green-100 text-green-800 border-green-200'
-      case 'negative':
-        return 'bg-red-100 text-red-800 border-red-200'
-      default:
-        return 'bg-gray-100 text-gray-800 border-gray-200'
-    }
+  const getRatingColor = (rating?: number) => {
+    if (!rating) return 'bg-gray-100 text-gray-800 border-gray-200'
+    if (rating >= 4) return 'bg-green-100 text-green-800 border-green-200'
+    if (rating <= 2) return 'bg-red-100 text-red-800 border-red-200'
+    return 'bg-yellow-100 text-yellow-800 border-yellow-200'
+  }
+
+  const getRatingText = (rating?: number) => {
+    if (!rating) return 'No Rating'
+    if (rating >= 4) return 'Positive'
+    if (rating <= 2) return 'Negative'
+    return 'Neutral'
   }
 
   return (
@@ -193,10 +226,10 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                                 <Badge variant="outline" className="text-xs">
                                   {item.engine}
                                 </Badge>
-                                {item.feedback && (
-                                  <Badge className={`text-xs ${getRatingColor(item.feedback.rating)}`}>
-                                    {getRatingIcon(item.feedback.rating)}
-                                    <span className="ml-1">Feedback</span>
+                                {item.feedback && item.feedback.length > 0 && (
+                                  <Badge className={`text-xs ${getRatingColor(item.feedback[0]?.rating)}`}>
+                                    {getRatingIcon(item.feedback[0]?.rating)}
+                                    <span className="ml-1">{item.feedback.length} Feedback{item.feedback.length > 1 ? 's' : ''}</span>
                                   </Badge>
                                 )}
                               </div>
@@ -241,17 +274,26 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                             <pre className="whitespace-pre-wrap">{item.generated_sql || 'No SQL generated'}</pre>
                           </div>
                         </div>
-                        {item.feedback && (
+                        {item.feedback && item.feedback.length > 0 && (
                           <div>
-                            <h4 className="font-medium text-sm">Feedback</h4>
-                            <div className="flex items-start gap-2 mt-1">
-                              {getRatingIcon(item.feedback.rating)}
-                              <div className="flex-1">
-                                <p className="text-xs text-muted-foreground">{item.feedback.comment}</p>
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  by {item.feedback.admin_username}
+                            <h4 className="font-medium text-sm">Feedback ({item.feedback.length})</h4>
+                            <div className="space-y-2 mt-1">
+                              {item.feedback.slice(0, 2).map((feedback) => (
+                                <div key={feedback.id} className="flex items-start gap-2">
+                                  {getRatingIcon(feedback.rating)}
+                                  <div className="flex-1">
+                                    <p className="text-xs text-muted-foreground">{feedback.comment}</p>
+                                    <p className="text-xs text-muted-foreground mt-1">
+                                      by {feedback.username} • {formatDate(feedback.created_at)}
+                                    </p>
+                                  </div>
+                                </div>
+                              ))}
+                              {item.feedback.length > 2 && (
+                                <p className="text-xs text-muted-foreground">
+                                  +{item.feedback.length - 2} more feedback entries
                                 </p>
-                              </div>
+                              )}
                             </div>
                           </div>
                         )}
@@ -300,21 +342,47 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                   
                   <div className="flex items-center gap-2">
                     <Badge variant="outline">{selectedQuery.engine}</Badge>
-                    {selectedQuery.feedback && (
-                      <Badge className={getRatingColor(selectedQuery.feedback.rating)}>
-                        {getRatingIcon(selectedQuery.feedback.rating)}
-                        <span className="ml-1">Has Feedback</span>
+                    {queryFeedback.length > 0 && (
+                      <Badge className={getRatingColor(queryFeedback[0]?.rating)}>
+                        {getRatingIcon(queryFeedback[0]?.rating)}
+                        <span className="ml-1">{queryFeedback.length} Feedback{queryFeedback.length > 1 ? 's' : ''}</span>
                       </Badge>
                     )}
                   </div>
                 </div>
 
                 {/* Tabs */}
-                <Tabs defaultValue="sql" className="w-full">
+                <Tabs 
+                  defaultValue="sql" 
+                  className="w-full"
+                  onValueChange={(value) => {
+                    console.log('🔄 Tab value changed to:', value)
+                    if (value === "feedback" && selectedQuery && queryFeedback.length === 0 && !isLoadingFeedback) {
+                      console.log('🔄 Tab changed to feedback, loading feedback for:', selectedQuery.id)
+                      loadQueryFeedback(selectedQuery.id)
+                    }
+                  }}
+                >
                   <TabsList className="grid w-full grid-cols-3">
                     <TabsTrigger value="sql">SQL Query</TabsTrigger>
                     <TabsTrigger value="explanation">Explanation</TabsTrigger>
-                    <TabsTrigger value="feedback">Feedback</TabsTrigger>
+                    <TabsTrigger 
+                      value="feedback"
+                      onClick={(e) => {
+                        console.log('🔄 Feedback tab clicked directly', e)
+                        console.log('🔄 selectedQuery:', selectedQuery)
+                        console.log('🔄 queryFeedback.length:', queryFeedback.length)
+                        console.log('🔄 isLoadingFeedback:', isLoadingFeedback)
+                        if (selectedQuery && queryFeedback.length === 0 && !isLoadingFeedback) {
+                          console.log('🔄 Loading feedback for:', selectedQuery.id)
+                          loadQueryFeedback(selectedQuery.id)
+                        } else {
+                          console.log('🔄 Not loading feedback - conditions not met')
+                        }
+                      }}
+                    >
+                      Feedback
+                    </TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="sql" className="space-y-4 mt-6">
@@ -350,13 +418,18 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                     <div className="flex items-center justify-between">
                       <h3 className="text-lg font-medium">Feedback</h3>
                       {permissions.isAdmin && (
-                        <Dialog open={feedbackDialog === selectedQuery.id} onOpenChange={(open) => {
-                          if (!open) {
-                            setFeedbackDialog(null)
-                            setFeedbackComment("")
-                            setFeedbackRating(3)
-                          }
-                        }}>
+                            <Dialog open={feedbackDialog === selectedQuery.id} onOpenChange={(open) => {
+                              if (!open) {
+                                setFeedbackDialog(null)
+                                setFeedbackComment("")
+                                setFeedbackRating(3)
+                                setFeedbackCorrectness(3)
+                                setFeedbackCompleteness(3)
+                                setFeedbackEfficiency(3)
+                                setFeedbackSuggestedSql("")
+                                setFeedbackImprovementNotes("")
+                              }
+                            }}>
                           <DialogTrigger asChild>
                             <Button
                               variant="outline"
@@ -377,7 +450,7 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                             </DialogHeader>
                             <div className="space-y-4">
                               <div>
-                                <label className="text-sm font-medium">Rating (1-5)</label>
+                                <label className="text-sm font-medium">Overall Rating (1-5)</label>
                                 <div className="flex space-x-2 mt-2">
                                   {[1, 2, 3, 4, 5].map((rating) => (
                                     <Button
@@ -399,12 +472,88 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                                   {feedbackRating === 5 && 'Excellent'}
                                 </div>
                               </div>
+
+                              <div className="grid grid-cols-3 gap-4">
+                                <div>
+                                  <label className="text-sm font-medium">Correctness (1-5)</label>
+                                  <div className="flex space-x-1 mt-2">
+                                    {[1, 2, 3, 4, 5].map((rating) => (
+                                      <Button
+                                        key={rating}
+                                        variant={feedbackCorrectness === rating ? 'default' : 'outline'}
+                                        size="sm"
+                                        onClick={() => setFeedbackCorrectness(rating)}
+                                        className="w-8 h-8 p-0 text-xs"
+                                      >
+                                        {rating}
+                                      </Button>
+                                    ))}
+                                  </div>
+                                </div>
+                                
+                                <div>
+                                  <label className="text-sm font-medium">Completeness (1-5)</label>
+                                  <div className="flex space-x-1 mt-2">
+                                    {[1, 2, 3, 4, 5].map((rating) => (
+                                      <Button
+                                        key={rating}
+                                        variant={feedbackCompleteness === rating ? 'default' : 'outline'}
+                                        size="sm"
+                                        onClick={() => setFeedbackCompleteness(rating)}
+                                        className="w-8 h-8 p-0 text-xs"
+                                      >
+                                        {rating}
+                                      </Button>
+                                    ))}
+                                  </div>
+                                </div>
+                                
+                                <div>
+                                  <label className="text-sm font-medium">Efficiency (1-5)</label>
+                                  <div className="flex space-x-1 mt-2">
+                                    {[1, 2, 3, 4, 5].map((rating) => (
+                                      <Button
+                                        key={rating}
+                                        variant={feedbackEfficiency === rating ? 'default' : 'outline'}
+                                        size="sm"
+                                        onClick={() => setFeedbackEfficiency(rating)}
+                                        className="w-8 h-8 p-0 text-xs"
+                                      >
+                                        {rating}
+                                      </Button>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+
                               <div>
                                 <label className="text-sm font-medium">Comment</label>
                                 <Textarea
-                                  placeholder="Enter your feedback..."
+                                  placeholder="Enter your feedback comment..."
                                   value={feedbackComment}
                                   onChange={(e) => setFeedbackComment(e.target.value)}
+                                  rows={3}
+                                  className="mt-2"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="text-sm font-medium">Suggested SQL (Optional)</label>
+                                <Textarea
+                                  placeholder="Enter improved SQL if you have suggestions..."
+                                  value={feedbackSuggestedSql}
+                                  onChange={(e) => setFeedbackSuggestedSql(e.target.value)}
+                                  rows={4}
+                                  className="mt-2 font-mono text-sm"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="text-sm font-medium">Improvement Notes (Optional)</label>
+                                <Textarea
+                                  placeholder="Additional notes for improvement..."
+                                  value={feedbackImprovementNotes}
+                                  onChange={(e) => setFeedbackImprovementNotes(e.target.value)}
                                   rows={3}
                                   className="mt-2"
                                 />
@@ -416,6 +565,11 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                                     setFeedbackDialog(null)
                                     setFeedbackComment("")
                                     setFeedbackRating(3)
+                                    setFeedbackCorrectness(3)
+                                    setFeedbackCompleteness(3)
+                                    setFeedbackEfficiency(3)
+                                    setFeedbackSuggestedSql("")
+                                    setFeedbackImprovementNotes("")
                                   }}
                                 >
                                   Cancel
@@ -440,31 +594,116 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                       )}
                     </div>
 
-                    {selectedQuery.feedback ? (
+                    {isLoadingFeedback ? (
+                      <div className="flex items-center justify-center py-8">
+                        <Loader2 className="h-8 w-8 animate-spin" />
+                        <span className="ml-2">Loading feedback...</span>
+                      </div>
+                    ) : queryFeedback.length > 0 ? (
                       <div className="space-y-4">
-                        <Card>
-                          <CardContent className="p-4">
-                            <div className="flex items-start gap-3">
-                              {getRatingIcon(selectedQuery.feedback.rating)}
-                              <div className="flex-1">
-                                <div className="flex items-center gap-2 mb-2">
-                                  <Badge className={getRatingColor(selectedQuery.feedback.rating)}>
-                                    {selectedQuery.feedback.rating}
-                                  </Badge>
-                                  <span className="text-sm text-muted-foreground">
-                                    by {selectedQuery.feedback.admin_username}
-                                  </span>
-                                  <span className="text-sm text-muted-foreground">
-                                    • {formatDate(selectedQuery.feedback.created_at)}
-                                  </span>
+                        {queryFeedback.map((feedback) => (
+                          <Card key={feedback.id}>
+                            <CardContent className="p-4">
+                              <div className="flex items-start gap-3">
+                                {getRatingIcon(feedback.rating)}
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <Badge className={getRatingColor(feedback.rating)}>
+                                      {feedback.rating ? `${feedback.rating}/5` : 'No Rating'}
+                                    </Badge>
+                                    <span className="text-sm text-muted-foreground">
+                                      by {feedback.username || 'Unknown User'}
+                                    </span>
+                                    <span className="text-sm text-muted-foreground">
+                                      • {formatDate(feedback.created_at)}
+                                    </span>
+                                  </div>
+                                  
+                                  {feedback.comment && (
+                                    <p className="text-sm leading-relaxed mb-3">
+                                      {feedback.comment}
+                                    </p>
+                                  )}
+
+                                  {/* Additional feedback details */}
+                                  <div className="grid grid-cols-3 gap-4 text-xs">
+                                    {feedback.correctness && (
+                                      <div>
+                                        <span className="font-medium">Correctness:</span>
+                                        <div className="flex items-center gap-1 mt-1">
+                                          {Array.from({ length: 5 }, (_, i) => (
+                                            <Star
+                                              key={i}
+                                              className={`w-3 h-3 ${
+                                                i < feedback.correctness! 
+                                                  ? 'text-yellow-400 fill-current' 
+                                                  : 'text-gray-300'
+                                              }`}
+                                            />
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                    
+                                    {feedback.completeness && (
+                                      <div>
+                                        <span className="font-medium">Completeness:</span>
+                                        <div className="flex items-center gap-1 mt-1">
+                                          {Array.from({ length: 5 }, (_, i) => (
+                                            <Star
+                                              key={i}
+                                              className={`w-3 h-3 ${
+                                                i < feedback.completeness! 
+                                                  ? 'text-yellow-400 fill-current' 
+                                                  : 'text-gray-300'
+                                              }`}
+                                            />
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                    
+                                    {feedback.efficiency && (
+                                      <div>
+                                        <span className="font-medium">Efficiency:</span>
+                                        <div className="flex items-center gap-1 mt-1">
+                                          {Array.from({ length: 5 }, (_, i) => (
+                                            <Star
+                                              key={i}
+                                              className={`w-3 h-3 ${
+                                                i < feedback.efficiency! 
+                                                  ? 'text-yellow-400 fill-current' 
+                                                  : 'text-gray-300'
+                                              }`}
+                                            />
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {feedback.suggested_sql && (
+                                    <div className="mt-3">
+                                      <span className="text-xs font-medium text-muted-foreground">Suggested SQL:</span>
+                                      <div className="bg-muted p-2 rounded text-xs font-mono mt-1">
+                                        <pre className="whitespace-pre-wrap">{feedback.suggested_sql}</pre>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {feedback.improvement_notes && (
+                                    <div className="mt-3">
+                                      <span className="text-xs font-medium text-muted-foreground">Improvement Notes:</span>
+                                      <p className="text-xs text-muted-foreground mt-1">
+                                        {feedback.improvement_notes}
+                                      </p>
+                                    </div>
+                                  )}
                                 </div>
-                                <p className="text-sm leading-relaxed">
-                                  {selectedQuery.feedback.comment}
-                                </p>
                               </div>
-                            </div>
-                          </CardContent>
-                        </Card>
+                            </CardContent>
+                          </Card>
+                        ))}
                       </div>
                     ) : (
                       <div className="text-center py-8">

@@ -122,13 +122,22 @@ export interface QueryHistoryItem {
   // Additional fields for frontend display
   catalog_name?: string
   username?: string
-  feedback?: {
-    id: string
-    rating: 'positive' | 'negative' | 'neutral'
-    comment: string
-    admin_username: string
-    created_at: string
-  }
+  feedback?: QueryFeedback[]
+}
+
+export interface QueryFeedback {
+  id: string
+  history_id: string
+  rating?: number  // 1-5 scale
+  comment?: string
+  correctness?: number  // 1-5 scale
+  completeness?: number  // 1-5 scale
+  efficiency?: number  // 1-5 scale
+  suggested_sql?: string
+  improvement_notes?: string
+  created_at: string
+  // Additional fields for frontend display
+  username?: string
 }
 
 export interface SubmitFeedbackRequest {
@@ -989,13 +998,19 @@ ORDER BY month;`,
           tokens_used: 150,
           catalog_name: 'E-commerce Database',
           username: 'john_doe',
-          feedback: {
-            id: 'feedback-1',
-            rating: 'positive',
-            comment: 'Great query! The JOIN is efficient and the LIMIT clause is properly used.',
-            admin_username: 'admin',
-            created_at: '2024-01-22T11:00:00Z'
-          }
+          feedback: [
+            {
+              id: 'feedback-1',
+              history_id: 'query-1',
+              rating: 4,
+              comment: 'Great query! The JOIN is efficient and the LIMIT clause is properly used.',
+              correctness: 4,
+              completeness: 4,
+              efficiency: 4,
+              created_at: '2024-01-22T11:00:00Z',
+              username: 'admin'
+            }
+          ]
         },
         {
           id: 'query-2',
@@ -1018,6 +1033,46 @@ ORDER BY month;`,
     // Use the correct backend endpoint: /v1/history
     const result = await this.request<{items: QueryHistoryItem[], total: number, limit: number, offset: number}>('/v1/history')
     return result.items
+  }
+
+  async getQueryFeedback(historyId: string): Promise<QueryFeedback[]> {
+    console.log('🌐 API: Getting feedback for history ID:', historyId)
+    
+    if (this.demoMode) {
+      console.log('🎮 Demo mode: Returning demo feedback')
+      // Return demo feedback data
+      return [
+        {
+          id: 'feedback-1',
+          history_id: historyId,
+          rating: 4,
+          comment: 'Good query structure, but could be optimized for better performance.',
+          correctness: 4,
+          completeness: 3,
+          efficiency: 3,
+          suggested_sql: 'SELECT * FROM table WHERE condition = ?',
+          improvement_notes: 'Consider adding indexes on frequently queried columns.',
+          created_at: '2024-01-22T11:00:00Z',
+          username: 'admin'
+        }
+      ]
+    }
+
+    try {
+      console.log('🌐 API: Making request to:', `/v1/history/${historyId}/feedback/all`)
+      // Get all feedback for this history item
+      const result = await this.request<QueryFeedback[]>(`/v1/history/${historyId}/feedback/all`)
+      console.log('✅ API: Feedback result:', result)
+      return result
+    } catch (error) {
+      console.error('❌ API: Error getting feedback:', error)
+      // If no feedback exists, return empty array
+      if (error instanceof ApiError && error.status === 404) {
+        console.log('📭 API: No feedback found (404), returning empty array')
+        return []
+      }
+      throw error
+    }
   }
 
   async submitQueryFeedback(feedback: SubmitFeedbackRequest): Promise<void> {

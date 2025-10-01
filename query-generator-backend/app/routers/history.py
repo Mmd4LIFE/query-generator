@@ -319,4 +319,50 @@ async def get_feedback(
         suggested_sql=feedback.suggested_sql,
         improvement_notes=feedback.improvement_notes,
         created_at=feedback.created_at.isoformat()
-    ) 
+    )
+
+
+@router.get("/{history_id}/feedback/all", response_model=List[FeedbackResponse])
+async def get_all_feedback(
+    history_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_user)
+):
+    """Get all feedback for a history item"""
+    
+    # Verify the history item exists and belongs to the user
+    stmt = select(QueryHistory).where(
+        QueryHistory.id == history_id,
+        QueryHistory.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    history = result.scalar_one_or_none()
+    
+    if not history:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="History item not found"
+        )
+    
+    # Get all feedback for this history item
+    stmt = select(QueryFeedback).where(
+        QueryFeedback.history_id == history_id
+    ).order_by(QueryFeedback.created_at.desc())
+    result = await db.execute(stmt)
+    feedback_list = result.scalars().all()
+    
+    return [
+        FeedbackResponse(
+            id=feedback.id,
+            history_id=feedback.history_id,
+            rating=feedback.rating,
+            comment=feedback.comment,
+            correctness=feedback.correctness,
+            completeness=feedback.completeness,
+            efficiency=feedback.efficiency,
+            suggested_sql=feedback.suggested_sql,
+            improvement_notes=feedback.improvement_notes,
+            created_at=feedback.created_at.isoformat()
+        )
+        for feedback in feedback_list
+    ] 

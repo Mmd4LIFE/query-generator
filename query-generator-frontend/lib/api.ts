@@ -18,5 +18,6 @@ export type {
   ApiResponse,
   PaginatedResponse,
   QueryHistoryItem,
+  QueryFeedback,
   SubmitFeedbackRequest
 } from './api-client'
