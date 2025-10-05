@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
+import Image from "next/image"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -47,6 +48,7 @@ import {
   convertColumnsToCatalogJSON, 
   generateSampleCSV,
   validateColumnsCSV,
+  getDatabaseLogo,
   type ColumnInfo,
   type DatabaseEngine
 } from "@/lib/catalog-utils"
@@ -79,6 +81,7 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
   const [parsedColumns, setParsedColumns] = useState<ColumnInfo[]>([])
   const [previewJson, setPreviewJson] = useState<any>(null)
   const [reindexingCatalog, setReindexingCatalog] = useState<string | null>(null)
+  const [isQueryCopied, setIsQueryCopied] = useState(false)
   
   // File upload
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -201,6 +204,8 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
         if (navigator.clipboard && navigator.clipboard.writeText) {
           await navigator.clipboard.writeText(engine.informationSchemaQuery)
           console.log('Query copied to clipboard!')
+          setIsQueryCopied(true)
+          setTimeout(() => setIsQueryCopied(false), 2000)
         } else {
           // Fallback for browsers without clipboard API
           console.log('Clipboard not available. Query:', engine.informationSchemaQuery)
@@ -448,8 +453,8 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
                 Add Catalog
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
+            <DialogContent className="max-w-6xl max-h-[95vh] overflow-hidden flex flex-col">
+              <DialogHeader className="flex-shrink-0">
                 <DialogTitle>Add New Catalog</DialogTitle>
                 <DialogDescription>
                   Upload your database schema from information_schema.columns CSV export.
@@ -457,7 +462,7 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
                 </DialogDescription>
               </DialogHeader>
               
-              <div className="space-y-6">
+              <div className="flex-1 overflow-y-auto pr-2 space-y-6">
                 {/* Step 1: Basic Information */}
                 <Card>
                   <CardHeader>
@@ -478,14 +483,84 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
                         <Label htmlFor="engine">Database Engine</Label>
                         <Select value={selectedEngine} onValueChange={handleEngineChange}>
                           <SelectTrigger>
-                            <SelectValue />
+                            <SelectValue>
+                              <div className="flex items-center gap-2">
+                                <Image 
+                                  src={getDatabaseLogo(selectedEngine)} 
+                                  alt={selectedEngineData?.label || ''} 
+                                  width={20} 
+                                  height={20}
+                                  className="object-contain"
+                                />
+                                <span>{selectedEngineData?.label}</span>
+                              </div>
+                            </SelectValue>
                           </SelectTrigger>
-                          <SelectContent>
-                            {DATABASE_ENGINES.map((engine) => (
+                          <SelectContent className="max-h-96">
+                            {/* Complete Support */}
+                            <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">
+                              Complete Support
+                            </div>
+                            {DATABASE_ENGINES.filter(e => e.category === 'complete').map((engine) => (
                               <SelectItem key={engine.value} value={engine.value}>
-                                {engine.label}
+                                <div className="flex items-center gap-2">
+                                  <Image 
+                                    src={getDatabaseLogo(engine.value)} 
+                                    alt={engine.label} 
+                                    width={20} 
+                                    height={20}
+                                    className="object-contain"
+                                  />
+                                  <span>{engine.label}</span>
+                                </div>
                               </SelectItem>
                             ))}
+                            
+                            {/* Basic Support */}
+                            {DATABASE_ENGINES.some(e => e.category === 'basic') && (
+                              <>
+                                <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground mt-2 border-t">
+                                  Basic Support
+                                </div>
+                                {DATABASE_ENGINES.filter(e => e.category === 'basic').map((engine) => (
+                                  <SelectItem key={engine.value} value={engine.value}>
+                                    <div className="flex items-center gap-2">
+                                      <Image 
+                                        src={getDatabaseLogo(engine.value)} 
+                                        alt={engine.label} 
+                                        width={20} 
+                                        height={20}
+                                        className="object-contain"
+                                      />
+                                      <span>{engine.label}</span>
+                                    </div>
+                                  </SelectItem>
+                                ))}
+                              </>
+                            )}
+                            
+                            {/* Other */}
+                            {DATABASE_ENGINES.some(e => e.category === 'other') && (
+                              <>
+                                <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground mt-2 border-t">
+                                  Other
+                                </div>
+                                {DATABASE_ENGINES.filter(e => e.category === 'other').map((engine) => (
+                                  <SelectItem key={engine.value} value={engine.value}>
+                                    <div className="flex items-center gap-2">
+                                      <Image 
+                                        src={getDatabaseLogo(engine.value)} 
+                                        alt={engine.label} 
+                                        width={20} 
+                                        height={20}
+                                        className="object-contain"
+                                      />
+                                      <span>{engine.label}</span>
+                                    </div>
+                                  </SelectItem>
+                                ))}
+                              </>
+                            )}
                           </SelectContent>
                         </Select>
                       </div>
@@ -512,21 +587,42 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <div className="flex items-center justify-between mb-2">
-                        <Label className="text-sm font-medium">SQL Query for {selectedEngineData?.label}:</Label>
+                    <div className="bg-muted/50 p-4 rounded-lg border">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <Image 
+                            src={getDatabaseLogo(selectedEngine)} 
+                            alt={selectedEngineData?.label || ''} 
+                            width={24} 
+                            height={24}
+                            className="object-contain"
+                          />
+                          <Label className="text-sm font-semibold">SQL Query for {selectedEngineData?.label}</Label>
+                        </div>
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={copyQueryToClipboard}
+                          disabled={isQueryCopied}
                         >
-                          <Copy className="w-4 h-4 mr-2" />
-                          Copy Query
+                          {isQueryCopied ? (
+                            <>
+                              <CheckCircle className="w-4 h-4 mr-2" />
+                              Copied!
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-4 h-4 mr-2" />
+                              Copy Query
+                            </>
+                          )}
                         </Button>
                       </div>
-                      <pre className="text-sm bg-gray-800 text-green-400 p-3 rounded overflow-x-auto">
-                        {selectedEngineData?.informationSchemaQuery}
-                      </pre>
+                      <div className="bg-slate-900 p-4 rounded-lg overflow-hidden">
+                        <pre className="text-sm text-green-400 overflow-x-auto whitespace-pre-wrap break-words">
+                          {selectedEngineData?.informationSchemaQuery}
+                        </pre>
+                      </div>
                     </div>
                     
                     <div className="flex items-center space-x-4">
@@ -702,29 +798,29 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
                     <AlertDescription>{error}</AlertDescription>
                   </Alert>
                 )}
+              </div>
 
-                {/* Submit Button */}
-                <div className="flex justify-end space-x-2">
-                  <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
-                    Cancel
-                  </Button>
-                  <Button 
-                    onClick={handleSubmit} 
-                    disabled={!previewJson || isSubmitting}
-                  >
-                    {isSubmitting ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Creating & Indexing...
-                      </>
-                    ) : (
-                      <>
-                        <Database className="w-4 h-4 mr-2" />
-                        Create & Index Catalog
-                      </>
-                    )}
-                  </Button>
-                </div>
+              {/* Submit Button - Fixed Footer */}
+              <div className="flex-shrink-0 pt-4 border-t flex justify-end space-x-2">
+                <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button 
+                  onClick={handleSubmit} 
+                  disabled={!previewJson || isSubmitting}
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Creating & Indexing...
+                    </>
+                  ) : (
+                    <>
+                      <Database className="w-4 h-4 mr-2" />
+                      Create & Index Catalog
+                    </>
+                  )}
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
