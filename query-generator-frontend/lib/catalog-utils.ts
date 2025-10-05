@@ -130,50 +130,6 @@ WHERE table_schema NOT IN ('INFORMATION_SCHEMA')
 ORDER BY table_schema, table_name, ordinal_position;`.trim()
   },
   {
-    value: 'amazon_aurora_mysql',
-    label: 'Amazon Aurora MySQL',
-    category: 'complete',
-    defaultPort: 3306,
-    connectionStringTemplate: 'mysql://user:password@host:port/database',
-    informationSchemaQuery: `SELECT 
-    table_schema as schema_name,
-    table_name,
-    column_name,
-    data_type,
-    is_nullable,
-    column_default,
-    character_maximum_length,
-    numeric_precision,
-    numeric_scale,
-    ordinal_position,
-    column_comment
-FROM information_schema.columns 
-WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
-ORDER BY table_schema, table_name, ordinal_position;`.trim()
-  },
-  {
-    value: 'amazon_redshift',
-    label: 'Amazon Redshift',
-    category: 'complete',
-    defaultPort: 5439,
-    connectionStringTemplate: 'redshift://user:password@host:port/database',
-    informationSchemaQuery: `SELECT 
-    table_schema as schema_name,
-    table_name,
-    column_name,
-    data_type,
-    is_nullable,
-    column_default,
-    character_maximum_length,
-    numeric_precision,
-    numeric_scale,
-    ordinal_position,
-    '' as column_comment
-FROM information_schema.columns 
-WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_internal')
-ORDER BY table_schema, table_name, ordinal_position;`.trim()
-  },
-  {
     value: 'bigquery',
     label: 'BigQuery',
     category: 'complete',
@@ -193,32 +149,6 @@ ORDER BY table_schema, table_name, ordinal_position;`.trim()
     '' as column_comment
 FROM \`project.dataset.INFORMATION_SCHEMA.COLUMNS\`
 ORDER BY table_schema, table_name, ordinal_position;`.trim()
-  },
-  {
-    value: 'azure_sql',
-    label: 'Azure SQL Database',
-    category: 'complete',
-    defaultPort: 1433,
-    connectionStringTemplate: 'mssql://user:password@host:port/database',
-    informationSchemaQuery: `SELECT 
-    SCHEMA_NAME(t.schema_id) as schema_name,
-    t.name as table_name,
-    c.name as column_name,
-    ty.name as data_type,
-    CASE WHEN c.is_nullable = 1 THEN 'YES' ELSE 'NO' END as is_nullable,
-    dc.definition as column_default,
-    c.max_length as character_maximum_length,
-    c.precision as numeric_precision,
-    c.scale as numeric_scale,
-    c.column_id as ordinal_position,
-    ep.value as column_comment
-FROM sys.tables t
-INNER JOIN sys.columns c ON t.object_id = c.object_id
-INNER JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-LEFT JOIN sys.default_constraints dc ON c.default_object_id = dc.object_id
-LEFT JOIN sys.extended_properties ep ON t.object_id = ep.major_id AND c.column_id = ep.minor_id
-WHERE t.is_ms_shipped = 0
-ORDER BY schema_name, table_name, ordinal_position;`.trim()
   },
   {
     value: 'mariadb',
@@ -266,41 +196,6 @@ FROM sqlite_master m
 JOIN pragma_table_info(m.name) p
 WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'
 ORDER BY m.name, p.cid;`.trim()
-  },
-  {
-    value: 'cockroachdb',
-    label: 'CockroachDB',
-    category: 'basic',
-    defaultPort: 26257,
-    connectionStringTemplate: 'postgresql://user:password@host:port/database',
-    informationSchemaQuery: `SELECT 
-    table_schema as schema_name,
-    table_name,
-    column_name,
-    data_type,
-    is_nullable,
-    column_default,
-    character_maximum_length,
-    numeric_precision,
-    numeric_scale,
-    ordinal_position,
-    '' as column_comment
-FROM information_schema.columns 
-WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'crdb_internal')
-ORDER BY table_schema, table_name, ordinal_position;`.trim()
-  },
-  {
-    value: 'mongodb',
-    label: 'MongoDB',
-    category: 'other',
-    defaultPort: 27017,
-    connectionStringTemplate: 'mongodb://user:password@host:port/database',
-    informationSchemaQuery: `-- MongoDB uses collections and documents instead of tables and columns
--- Use mongosh or MongoDB Compass to export schema information
--- Sample format for CSV:
--- schema_name,collection_name,field_name,data_type,is_nullable,ordinal_position
--- database_name,users,_id,ObjectId,NO,1
--- database_name,users,username,String,NO,2`.trim()
   },
 ]
 

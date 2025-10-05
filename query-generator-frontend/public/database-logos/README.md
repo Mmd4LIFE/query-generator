@@ -12,18 +12,11 @@ Place PNG logo files in this directory with the following names:
 - `mssql.png` - Microsoft SQL Server
 - `oracle.png` - Oracle
 - `snowflake.png` - Snowflake
-- `amazon_aurora_mysql.png` - Amazon Aurora MySQL
-- `amazon_redshift.png` - Amazon Redshift
 - `bigquery.png` - Google BigQuery
-- `azure_sql.png` - Azure SQL Database
 - `mariadb.png` - MariaDB
 
 ### Basic Support
 - `sqlite.png` - SQLite
-- `cockroachdb.png` - CockroachDB
-
-### Other
-- `mongodb.png` - MongoDB
 
 ## Logo Requirements
 
