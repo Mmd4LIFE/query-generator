@@ -145,6 +145,11 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
     return date.toLocaleDateString()
   }
 
+  const truncateText = (text: string, maxLength: number = 60) => {
+    if (text.length <= maxLength) return text
+    return text.substring(0, maxLength) + '...'
+  }
+
   const getRatingIcon = (rating?: number) => {
     if (!rating) return <Star className="w-4 h-4 text-muted-foreground" />
     if (rating >= 4) return <ThumbsUp className="w-4 h-4 text-green-500" />
@@ -259,8 +264,8 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center space-x-2 mb-2">
-                          <h3 className="font-semibold text-sm truncate group-hover:text-primary transition-colors">
-                            {item.question}
+                          <h3 className="font-semibold text-sm group-hover:text-primary transition-colors">
+                            {truncateText(item.question, 65)}
                           </h3>
                           {item.feedback && item.feedback.length > 0 && (
                             <Badge variant="secondary" className="text-xs px-2 py-0.5">
@@ -375,12 +380,25 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                 </TabsList>
 
                 <TabsContent value="sql" className="space-y-4 mt-6">
-                  <div className="space-y-2">
-                    <h4 className="text-sm font-medium">Generated SQL</h4>
-                    <div className="bg-muted p-4 rounded-lg">
-                      <pre className="text-sm font-mono whitespace-pre-wrap overflow-x-auto">
-                        {selectedQuery.generated_sql || 'No SQL generated'}
-                      </pre>
+                  <div className="space-y-4">
+                    {/* User Request */}
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-medium">User Request</h4>
+                      <div className="bg-muted/50 p-3 rounded-lg border border-border">
+                        <p className="text-sm">
+                          {selectedQuery.question}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Generated SQL */}
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-medium">Generated SQL</h4>
+                      <div className="bg-muted p-4 rounded-lg">
+                        <pre className="text-sm font-mono whitespace-pre-wrap overflow-x-auto">
+                          {selectedQuery.generated_sql || 'No SQL generated'}
+                        </pre>
+                      </div>
                     </div>
                   </div>
                 </TabsContent>
