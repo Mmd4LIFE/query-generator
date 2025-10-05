@@ -14,6 +14,7 @@ Place PNG logo files in this directory with the following names:
 - `snowflake.png` - Snowflake
 - `bigquery.png` - Google BigQuery
 - `mariadb.png` - MariaDB
+- `clickhouse.png` - ClickHouse
 
 ### Basic Support
 - `sqlite.png` - SQLite

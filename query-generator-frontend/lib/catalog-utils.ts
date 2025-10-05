@@ -172,6 +172,28 @@ FROM information_schema.columns
 WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
 ORDER BY table_schema, table_name, ordinal_position;`.trim()
   },
+  {
+    value: 'clickhouse',
+    label: 'ClickHouse',
+    category: 'complete',
+    defaultPort: 9000,
+    connectionStringTemplate: 'clickhouse://user:password@host:port/database',
+    informationSchemaQuery: `SELECT 
+    database as schema_name,
+    table as table_name,
+    name as column_name,
+    type as data_type,
+    CASE WHEN type LIKE '%Nullable%' THEN 'YES' ELSE 'NO' END as is_nullable,
+    default_expression as column_default,
+    '' as character_maximum_length,
+    '' as numeric_precision,
+    '' as numeric_scale,
+    position as ordinal_position,
+    comment as column_comment
+FROM system.columns
+WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
+ORDER BY database, table, position;`.trim()
+  },
   
   // Basic Support
   {
