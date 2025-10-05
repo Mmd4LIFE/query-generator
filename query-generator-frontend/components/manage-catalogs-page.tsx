@@ -81,6 +81,7 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
   const [parsedColumns, setParsedColumns] = useState<ColumnInfo[]>([])
   const [previewJson, setPreviewJson] = useState<any>(null)
   const [reindexingCatalog, setReindexingCatalog] = useState<string | null>(null)
+  const [isQueryCopied, setIsQueryCopied] = useState(false)
   
   // File upload
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -203,6 +204,8 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
         if (navigator.clipboard && navigator.clipboard.writeText) {
           await navigator.clipboard.writeText(engine.informationSchemaQuery)
           console.log('Query copied to clipboard!')
+          setIsQueryCopied(true)
+          setTimeout(() => setIsQueryCopied(false), 2000)
         } else {
           // Fallback for browsers without clipboard API
           console.log('Clipboard not available. Query:', engine.informationSchemaQuery)
@@ -600,9 +603,19 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
                           variant="outline"
                           size="sm"
                           onClick={copyQueryToClipboard}
+                          disabled={isQueryCopied}
                         >
-                          <Copy className="w-4 h-4 mr-2" />
-                          Copy Query
+                          {isQueryCopied ? (
+                            <>
+                              <CheckCircle className="w-4 h-4 mr-2" />
+                              Copied!
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-4 h-4 mr-2" />
+                              Copy Query
+                            </>
+                          )}
                         </Button>
                       </div>
                       <div className="bg-slate-900 p-4 rounded-lg overflow-hidden">
