@@ -169,6 +169,10 @@ async def process_catalog_objects(
             "object_type": "table"
         }
         
+        # Add object_id if we have the table object
+        if table_data["table"]:
+            metadata["object_id"] = str(table_data["table"].id)
+        
         chunks.append((content, metadata))
     
     logger.info("Created table chunks", count=len(chunks))
@@ -338,6 +342,16 @@ async def create_embeddings_for_catalog(
                 # Update existing in PostgreSQL
                 existing.embedding_metadata = chunk_metadata
                 
+                # Update specific ID references based on kind
+                if chunk_metadata["kind"] == "object" and "object_id" in chunk_metadata:
+                    existing.object_id = uuid.UUID(chunk_metadata["object_id"])
+                elif chunk_metadata["kind"] == "note" and "note_id" in chunk_metadata:
+                    existing.note_id = uuid.UUID(chunk_metadata["note_id"])
+                elif chunk_metadata["kind"] == "metric" and "metric_id" in chunk_metadata:
+                    existing.metric_id = uuid.UUID(chunk_metadata["metric_id"])
+                elif chunk_metadata["kind"] == "example" and "example_id" in chunk_metadata:
+                    existing.example_id = uuid.UUID(chunk_metadata["example_id"])
+                
                 # Prepare Qdrant update
                 qdrant_payload = {
                     "catalog_id": str(catalog_id),
@@ -356,7 +370,9 @@ async def create_embeddings_for_catalog(
                 )
                 
                 # Set specific ID references based on kind
-                if chunk_metadata["kind"] == "note" and "note_id" in chunk_metadata:
+                if chunk_metadata["kind"] == "object" and "object_id" in chunk_metadata:
+                    db_embedding.object_id = uuid.UUID(chunk_metadata["object_id"])
+                elif chunk_metadata["kind"] == "note" and "note_id" in chunk_metadata:
                     db_embedding.note_id = uuid.UUID(chunk_metadata["note_id"])
                 elif chunk_metadata["kind"] == "metric" and "metric_id" in chunk_metadata:
                     db_embedding.metric_id = uuid.UUID(chunk_metadata["metric_id"])
