@@ -59,10 +59,7 @@ def upgrade() -> None:
     sa.Column('qdrant_point_id', sa.String(length=255), nullable=True),
     sa.Column('kind', sa.String(length=20), nullable=False),
     sa.Column('catalog_id', sa.UUID(), nullable=True),
-    sa.Column('object_id', sa.UUID(), nullable=True),
-    sa.Column('note_id', sa.UUID(), nullable=True),
-    sa.Column('metric_id', sa.UUID(), nullable=True),
-    sa.Column('example_id', sa.UUID(), nullable=True),
+    sa.Column('entity_id', sa.UUID(), nullable=True),
     sa.Column('embedding_metadata', sa.JSON(), nullable=True),
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -70,6 +67,7 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_dq_embeddings_catalog_id'), 'dq_embeddings', ['catalog_id'], unique=False)
+    op.create_index(op.f('ix_dq_embeddings_entity_id'), 'dq_embeddings', ['entity_id'], unique=False)
     op.create_index(op.f('ix_dq_embeddings_qdrant_point_id'), 'dq_embeddings', ['qdrant_point_id'], unique=False)
     op.create_table('dq_examples',
     sa.Column('title', sa.String(length=255), nullable=False),

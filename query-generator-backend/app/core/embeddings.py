@@ -169,9 +169,9 @@ async def process_catalog_objects(
             "object_type": "table"
         }
         
-        # Add object_id if we have the table object
+        # Add entity_id if we have the table object
         if table_data["table"]:
-            metadata["object_id"] = str(table_data["table"].id)
+            metadata["entity_id"] = str(table_data["table"].id)
         
         chunks.append((content, metadata))
     
@@ -207,7 +207,7 @@ async def process_knowledge_items(
         metadata = {
             "catalog_id": str(note.catalog_id) if note.catalog_id else None,
             "kind": "note",
-            "note_id": str(note.id),
+            "entity_id": str(note.id),
             "title": note.title
         }
         chunks.append((content, metadata))
@@ -224,7 +224,7 @@ async def process_knowledge_items(
         metadata = {
             "catalog_id": str(metric.catalog_id) if metric.catalog_id else None,
             "kind": "metric",
-            "metric_id": str(metric.id),
+            "entity_id": str(metric.id),
             "name": metric.name
         }
         chunks.append((content, metadata))
@@ -241,7 +241,7 @@ async def process_knowledge_items(
         metadata = {
             "catalog_id": str(example.catalog_id) if example.catalog_id else None,
             "kind": "example",
-            "example_id": str(example.id),
+            "entity_id": str(example.id),
             "title": example.title,
             "engine": example.engine
         }
@@ -342,15 +342,9 @@ async def create_embeddings_for_catalog(
                 # Update existing in PostgreSQL
                 existing.embedding_metadata = chunk_metadata
                 
-                # Update specific ID references based on kind
-                if chunk_metadata["kind"] == "object" and "object_id" in chunk_metadata:
-                    existing.object_id = uuid.UUID(chunk_metadata["object_id"])
-                elif chunk_metadata["kind"] == "note" and "note_id" in chunk_metadata:
-                    existing.note_id = uuid.UUID(chunk_metadata["note_id"])
-                elif chunk_metadata["kind"] == "metric" and "metric_id" in chunk_metadata:
-                    existing.metric_id = uuid.UUID(chunk_metadata["metric_id"])
-                elif chunk_metadata["kind"] == "example" and "example_id" in chunk_metadata:
-                    existing.example_id = uuid.UUID(chunk_metadata["example_id"])
+                # Update entity_id (polymorphic reference)
+                if "entity_id" in chunk_metadata:
+                    existing.entity_id = uuid.UUID(chunk_metadata["entity_id"])
                 
                 # Prepare Qdrant update
                 qdrant_payload = {
@@ -369,15 +363,9 @@ async def create_embeddings_for_catalog(
                     embedding_metadata=chunk_metadata
                 )
                 
-                # Set specific ID references based on kind
-                if chunk_metadata["kind"] == "object" and "object_id" in chunk_metadata:
-                    db_embedding.object_id = uuid.UUID(chunk_metadata["object_id"])
-                elif chunk_metadata["kind"] == "note" and "note_id" in chunk_metadata:
-                    db_embedding.note_id = uuid.UUID(chunk_metadata["note_id"])
-                elif chunk_metadata["kind"] == "metric" and "metric_id" in chunk_metadata:
-                    db_embedding.metric_id = uuid.UUID(chunk_metadata["metric_id"])
-                elif chunk_metadata["kind"] == "example" and "example_id" in chunk_metadata:
-                    db_embedding.example_id = uuid.UUID(chunk_metadata["example_id"])
+                # Set entity_id (polymorphic reference)
+                if "entity_id" in chunk_metadata:
+                    db_embedding.entity_id = uuid.UUID(chunk_metadata["entity_id"])
                 
                 db.add(db_embedding)
                 await db.flush()  # Get the ID but DON'T commit yet
@@ -485,34 +473,52 @@ async def cleanup_rejected_embeddings(
     embedding_ids_to_delete = []
     
     try:
-        # Phase 1: Collect all embeddings to delete
+        # Phase 1: Collect all embeddings to delete (using polymorphic entity_id)
         for note in rejected_notes:
-            stmt = select(Embedding).where(Embedding.note_id == note.id)
+            stmt = select(Embedding).where(
+                Embedding.entity_id == note.id,
+                Embedding.kind == "note"
+            )
             result = await db.execute(stmt)
             embeddings_to_delete = result.scalars().all()
             embedding_ids_to_delete.extend([emb.id for emb in embeddings_to_delete])
             
-            stmt = delete(Embedding).where(Embedding.note_id == note.id)
+            stmt = delete(Embedding).where(
+                Embedding.entity_id == note.id,
+                Embedding.kind == "note"
+            )
             result = await db.execute(stmt)
             deleted_count += result.rowcount
         
         for metric in rejected_metrics:
-            stmt = select(Embedding).where(Embedding.metric_id == metric.id)
+            stmt = select(Embedding).where(
+                Embedding.entity_id == metric.id,
+                Embedding.kind == "metric"
+            )
             result = await db.execute(stmt)
             embeddings_to_delete = result.scalars().all()
             embedding_ids_to_delete.extend([emb.id for emb in embeddings_to_delete])
             
-            stmt = delete(Embedding).where(Embedding.metric_id == metric.id)
+            stmt = delete(Embedding).where(
+                Embedding.entity_id == metric.id,
+                Embedding.kind == "metric"
+            )
             result = await db.execute(stmt)
             deleted_count += result.rowcount
         
         for example in rejected_examples:
-            stmt = select(Embedding).where(Embedding.example_id == example.id)
+            stmt = select(Embedding).where(
+                Embedding.entity_id == example.id,
+                Embedding.kind == "example"
+            )
             result = await db.execute(stmt)
             embeddings_to_delete = result.scalars().all()
             embedding_ids_to_delete.extend([emb.id for emb in embeddings_to_delete])
             
-            stmt = delete(Embedding).where(Embedding.example_id == example.id)
+            stmt = delete(Embedding).where(
+                Embedding.entity_id == example.id,
+                Embedding.kind == "example"
+            )
             result = await db.execute(stmt)
             deleted_count += result.rowcount
         
