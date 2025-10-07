@@ -1,5 +1,4 @@
 """Initial migration
-import pgvector.sqlalchemy
 
 Revision ID: e589e92b779b
 Revises: 
@@ -7,7 +6,6 @@ Create Date: 2025-09-06 22:38:36.850213
 
 """
 from alembic import op
-import pgvector.sqlalchemy
 import sqlalchemy as sa
 
 
@@ -58,7 +56,7 @@ def upgrade() -> None:
     )
     op.create_table('dq_embeddings',
     sa.Column('content', sa.Text(), nullable=False),
-    sa.Column('embedding', pgvector.sqlalchemy.Vector(dim=3072), nullable=False),
+    sa.Column('qdrant_point_id', sa.String(length=255), nullable=True),
     sa.Column('kind', sa.String(length=20), nullable=False),
     sa.Column('catalog_id', sa.UUID(), nullable=True),
     sa.Column('object_id', sa.UUID(), nullable=True),
@@ -72,6 +70,7 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_dq_embeddings_catalog_id'), 'dq_embeddings', ['catalog_id'], unique=False)
+    op.create_index(op.f('ix_dq_embeddings_qdrant_point_id'), 'dq_embeddings', ['qdrant_point_id'], unique=False)
     op.create_table('dq_examples',
     sa.Column('title', sa.String(length=255), nullable=False),
     sa.Column('description', sa.Text(), nullable=False),

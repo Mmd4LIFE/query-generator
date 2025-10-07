@@ -52,7 +52,6 @@ async def create_db_and_tables():
     try:
         async with engine.begin() as conn:
             # Enable required PostgreSQL extensions
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\""))
             
             # Create all tables
