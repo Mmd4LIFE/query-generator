@@ -1,7 +1,7 @@
 services:
-  # PostgreSQL database with pgvector
+  # PostgreSQL database (no longer using pgvector)
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:16
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-qg}
       POSTGRES_USER: ${POSTGRES_USER:-qg}
@@ -17,6 +17,23 @@ services:
       timeout: 5s
       retries: 5
 
+  # Qdrant vector database
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c '</dev/tcp/localhost/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # Backend API
   backend:
     build:
@@ -31,6 +48,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-qg}
       POSTGRES_USER: ${POSTGRES_USER:-qg}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qg}
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_GRPC_PORT: 6334
+      QDRANT_COLLECTION_NAME: ${QDRANT_COLLECTION_NAME:-embeddings}
       HOST: ${HOST:-localhost}
       BACKEND_PORT: ${BACKEND_PORT:-8000}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
@@ -53,6 +74,8 @@ services:
       TEMPERATURE: ${TEMPERATURE:-0.1}
     depends_on:
       postgres:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     volumes:
       - ./query-generator-backend/app:/app/app
@@ -115,3 +138,4 @@ services:
 
 volumes:
   postgres_data:
+  qdrant_data:

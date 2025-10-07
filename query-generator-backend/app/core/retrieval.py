@@ -2,14 +2,15 @@
 RAG retrieval functionality
 """
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import structlog
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.openai_client import embed_single_text
+from app.core.qdrant_client import qdrant_store
 from app.models.vector import Embedding
 
 logger = structlog.get_logger()
@@ -24,7 +25,7 @@ async def retrieve_context(
     include_tables: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
     """
-    Retrieve relevant context chunks for a question using vector similarity.
+    Retrieve relevant context chunks for a question using vector similarity from Qdrant.
     
     Args:
         db: Database session
@@ -50,60 +51,50 @@ async def retrieve_context(
         logger.error("Failed to generate question embedding")
         return []
     
-    # Build the query
+    # Get max chunks
     max_chunks = max_chunks or settings.max_chunks
     
-    # Base query with cosine similarity
-    query = text("""
-        SELECT 
-            content,
-            embedding_metadata,
-            kind,
-            (embedding <=> :question_embedding) as distance
-        FROM dq_embeddings
-        WHERE catalog_id = :catalog_id
-    """)
-    
-    # Add schema/table filters if specified
-    filters = []
-    params = {
-        "question_embedding": str(question_embedding),
-        "catalog_id": catalog_id,
-        "max_chunks": max_chunks
-    }
-    
+    # Build filter conditions
+    filter_conditions = {}
     if include_schemas:
-        filters.append("(embedding_metadata->>'schema' = ANY(:include_schemas))")
-        params["include_schemas"] = include_schemas
-    
+        filter_conditions["schema"] = include_schemas[0]  # Qdrant filter limitation, use first schema
     if include_tables:
-        filters.append("(embedding_metadata->>'table' = ANY(:include_tables))")
-        params["include_tables"] = include_tables
+        filter_conditions["table"] = include_tables[0]  # Qdrant filter limitation, use first table
     
-    if filters:
-        query = text(str(query) + " AND " + " AND ".join(filters))
-    
-    # Add ordering and limit
-    query = text(str(query) + " ORDER BY distance ASC LIMIT :max_chunks")
-    
-    # Execute query
+    # Search in Qdrant
     try:
-        result = await db.execute(query, params)
-        rows = result.fetchall()
+        qdrant_results = await qdrant_store.search_similar(
+            query_vector=question_embedding,
+            catalog_id=catalog_id,
+            limit=max_chunks,
+            filter_conditions=filter_conditions if filter_conditions else None
+        )
         
+        # Get embedding metadata from PostgreSQL
         context_chunks = []
-        for row in rows:
-            context_chunks.append({
-                "content": row.content,
-                "metadata": row.embedding_metadata,
-                "kind": row.kind,
-                "distance": float(row.distance)
-            })
+        for result in qdrant_results:
+            point_id = result["point_id"]
+            score = result["score"]
+            payload = result["payload"]
+            
+            # Retrieve full embedding record from PostgreSQL for content
+            stmt = select(Embedding).where(Embedding.qdrant_point_id == point_id)
+            db_result = await db.execute(stmt)
+            embedding_record = db_result.scalar_one_or_none()
+            
+            if embedding_record:
+                context_chunks.append({
+                    "content": embedding_record.content,
+                    "metadata": embedding_record.embedding_metadata,
+                    "kind": embedding_record.kind,
+                    "score": score,
+                    "distance": 1 - score  # Convert score to distance for compatibility
+                })
         
         logger.info(
             "Context retrieved",
             chunks_found=len(context_chunks),
-            avg_distance=sum(c["distance"] for c in context_chunks) / len(context_chunks) if context_chunks else 0
+            avg_score=sum(c["score"] for c in context_chunks) / len(context_chunks) if context_chunks else 0
         )
         
         return context_chunks

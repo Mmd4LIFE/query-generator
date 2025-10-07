@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.openai_client import generate_embeddings
+from app.core.qdrant_client import qdrant_store
 from app.models.catalog import Catalog, CatalogObject
 from app.models.knowledge import Example, Metric, Note
 from app.models.vector import Embedding
@@ -168,6 +169,10 @@ async def process_catalog_objects(
             "object_type": "table"
         }
         
+        # Add entity_id if we have the table object
+        if table_data["table"]:
+            metadata["entity_id"] = str(table_data["table"].id)
+        
         chunks.append((content, metadata))
     
     logger.info("Created table chunks", count=len(chunks))
@@ -202,7 +207,7 @@ async def process_knowledge_items(
         metadata = {
             "catalog_id": str(note.catalog_id) if note.catalog_id else None,
             "kind": "note",
-            "note_id": str(note.id),
+            "entity_id": str(note.id),
             "title": note.title
         }
         chunks.append((content, metadata))
@@ -219,7 +224,7 @@ async def process_knowledge_items(
         metadata = {
             "catalog_id": str(metric.catalog_id) if metric.catalog_id else None,
             "kind": "metric",
-            "metric_id": str(metric.id),
+            "entity_id": str(metric.id),
             "name": metric.name
         }
         chunks.append((content, metadata))
@@ -236,7 +241,7 @@ async def process_knowledge_items(
         metadata = {
             "catalog_id": str(example.catalog_id) if example.catalog_id else None,
             "kind": "example",
-            "example_id": str(example.id),
+            "entity_id": str(example.id),
             "title": example.title,
             "engine": example.engine
         }
@@ -273,10 +278,30 @@ async def create_embeddings_for_catalog(
     
     # Delete existing embeddings if force is True
     if force:
-        stmt = delete(Embedding).where(Embedding.catalog_id == catalog_id)
-        await db.execute(stmt)
-        await db.commit()
-        logger.info("Deleted existing embeddings", catalog_id=catalog_id)
+        try:
+            # Phase 1: Delete from PostgreSQL (not committed yet)
+            stmt = delete(Embedding).where(Embedding.catalog_id == catalog_id)
+            result = await db.execute(stmt)
+            deleted_count = result.rowcount
+            
+            # Phase 2: Delete from Qdrant (if this fails, PostgreSQL will rollback)
+            await qdrant_store.delete_by_catalog(catalog_id)
+            
+            # Phase 3: Commit PostgreSQL transaction
+            await db.commit()
+            logger.info(
+                "✅ Force delete successful - both databases in sync",
+                catalog_id=catalog_id,
+                deleted=deleted_count
+            )
+        except Exception as e:
+            logger.error(
+                "❌ Error during force delete - rolling back PostgreSQL transaction",
+                error=str(e),
+                catalog_id=catalog_id
+            )
+            await db.rollback()
+            raise
     
     # Always clean up rejected embeddings
     deleted_count = await cleanup_rejected_embeddings(db, catalog_id)
@@ -297,46 +322,102 @@ async def create_embeddings_for_catalog(
     if len(embeddings) != len(all_chunks):
         raise ValueError("Embedding count mismatch")
     
-    # Store embeddings
+    # Store embeddings with proper transaction handling
     created_count = 0
     updated_count = 0
+    qdrant_points_to_insert = []  # Collect all Qdrant operations
     
-    for (content, chunk_metadata), embedding in zip(all_chunks, embeddings):
-        # Check if embedding already exists
-        stmt = select(Embedding).where(
-            Embedding.catalog_id == catalog_id,
-            Embedding.content == content
-        )
-        result = await db.execute(stmt)
-        existing = result.scalar_one_or_none()
-        
-        if existing:
-            # Update existing
-            existing.embedding = embedding
-            existing.embedding_metadata = chunk_metadata
-            updated_count += 1
-        else:
-            # Create new
-            db_embedding = Embedding(
-                content=content,
-                embedding=embedding,
-                kind=chunk_metadata["kind"],
-                catalog_id=catalog_id,
-                embedding_metadata=chunk_metadata
+    try:
+        # Phase 1: Prepare PostgreSQL records (not committed yet)
+        for (content, chunk_metadata), embedding in zip(all_chunks, embeddings):
+            # Check if embedding already exists
+            stmt = select(Embedding).where(
+                Embedding.catalog_id == catalog_id,
+                Embedding.content == content
             )
+            result = await db.execute(stmt)
+            existing = result.scalar_one_or_none()
             
-            # Set specific ID references based on kind
-            if chunk_metadata["kind"] == "note" and "note_id" in chunk_metadata:
-                db_embedding.note_id = uuid.UUID(chunk_metadata["note_id"])
-            elif chunk_metadata["kind"] == "metric" and "metric_id" in chunk_metadata:
-                db_embedding.metric_id = uuid.UUID(chunk_metadata["metric_id"])
-            elif chunk_metadata["kind"] == "example" and "example_id" in chunk_metadata:
-                db_embedding.example_id = uuid.UUID(chunk_metadata["example_id"])
-            
-            db.add(db_embedding)
-            created_count += 1
-    
-    await db.commit()
+            if existing:
+                # Update existing in PostgreSQL
+                existing.embedding_metadata = chunk_metadata
+                
+                # Update entity_id (polymorphic reference)
+                if "entity_id" in chunk_metadata:
+                    existing.entity_id = uuid.UUID(chunk_metadata["entity_id"])
+                
+                # Prepare Qdrant update
+                qdrant_payload = {
+                    "catalog_id": str(catalog_id),
+                    "kind": chunk_metadata["kind"],
+                    "metadata": chunk_metadata
+                }
+                qdrant_points_to_insert.append((existing.id, embedding, qdrant_payload))
+                updated_count += 1
+            else:
+                # Create new in PostgreSQL
+                db_embedding = Embedding(
+                    content=content,
+                    kind=chunk_metadata["kind"],
+                    catalog_id=catalog_id,
+                    embedding_metadata=chunk_metadata
+                )
+                
+                # Set entity_id (polymorphic reference)
+                if "entity_id" in chunk_metadata:
+                    db_embedding.entity_id = uuid.UUID(chunk_metadata["entity_id"])
+                
+                db.add(db_embedding)
+                await db.flush()  # Get the ID but DON'T commit yet
+                
+                # Prepare Qdrant insert
+                qdrant_payload = {
+                    "catalog_id": str(catalog_id),
+                    "kind": chunk_metadata["kind"],
+                    "metadata": chunk_metadata
+                }
+                qdrant_points_to_insert.append((db_embedding.id, embedding, qdrant_payload))
+                created_count += 1
+        
+        # Phase 2: Insert all data to Qdrant (if this fails, PostgreSQL will rollback)
+        logger.info("Inserting to Qdrant", count=len(qdrant_points_to_insert))
+        point_ids = await qdrant_store.upsert_embeddings_batch(qdrant_points_to_insert)
+        
+        # Phase 3: Update PostgreSQL records with Qdrant point IDs
+        for i, (embedding_id, _, _) in enumerate(qdrant_points_to_insert):
+            stmt = select(Embedding).where(Embedding.id == embedding_id)
+            result = await db.execute(stmt)
+            embedding_record = result.scalar_one()
+            embedding_record.qdrant_point_id = point_ids[i]
+        
+        # Phase 4: Commit PostgreSQL transaction (both DBs now in sync)
+        await db.commit()
+        logger.info(
+            "✅ Transaction committed successfully - both databases in sync",
+            catalog_id=catalog_id,
+            created=created_count,
+            updated=updated_count
+        )
+        
+    except Exception as e:
+        # Rollback PostgreSQL if Qdrant insertion fails
+        logger.error(
+            "❌ Error during embedding insertion - rolling back PostgreSQL transaction",
+            error=str(e),
+            catalog_id=catalog_id
+        )
+        await db.rollback()
+        
+        # Attempt to clean up any Qdrant points that may have been inserted
+        if qdrant_points_to_insert:
+            try:
+                embedding_ids = [emb_id for emb_id, _, _ in qdrant_points_to_insert]
+                await qdrant_store.delete_batch(embedding_ids)
+                logger.info("Cleaned up Qdrant points after rollback", count=len(embedding_ids))
+            except Exception as cleanup_error:
+                logger.error("Failed to clean up Qdrant points", error=str(cleanup_error))
+        
+        raise  # Re-raise the original exception
     
     logger.info(
         "Embeddings created/updated",
@@ -389,26 +470,76 @@ async def cleanup_rejected_embeddings(
     rejected_examples = result.scalars().all()
     
     deleted_count = 0
+    embedding_ids_to_delete = []
     
-    # Delete embeddings for rejected notes
-    for note in rejected_notes:
-        stmt = delete(Embedding).where(Embedding.note_id == note.id)
-        result = await db.execute(stmt)
-        deleted_count += result.rowcount
-    
-    # Delete embeddings for rejected metrics
-    for metric in rejected_metrics:
-        stmt = delete(Embedding).where(Embedding.metric_id == metric.id)
-        result = await db.execute(stmt)
-        deleted_count += result.rowcount
-    
-    # Delete embeddings for rejected examples
-    for example in rejected_examples:
-        stmt = delete(Embedding).where(Embedding.example_id == example.id)
-        result = await db.execute(stmt)
-        deleted_count += result.rowcount
-    
-    await db.commit()
+    try:
+        # Phase 1: Collect all embeddings to delete (using polymorphic entity_id)
+        for note in rejected_notes:
+            stmt = select(Embedding).where(
+                Embedding.entity_id == note.id,
+                Embedding.kind == "note"
+            )
+            result = await db.execute(stmt)
+            embeddings_to_delete = result.scalars().all()
+            embedding_ids_to_delete.extend([emb.id for emb in embeddings_to_delete])
+            
+            stmt = delete(Embedding).where(
+                Embedding.entity_id == note.id,
+                Embedding.kind == "note"
+            )
+            result = await db.execute(stmt)
+            deleted_count += result.rowcount
+        
+        for metric in rejected_metrics:
+            stmt = select(Embedding).where(
+                Embedding.entity_id == metric.id,
+                Embedding.kind == "metric"
+            )
+            result = await db.execute(stmt)
+            embeddings_to_delete = result.scalars().all()
+            embedding_ids_to_delete.extend([emb.id for emb in embeddings_to_delete])
+            
+            stmt = delete(Embedding).where(
+                Embedding.entity_id == metric.id,
+                Embedding.kind == "metric"
+            )
+            result = await db.execute(stmt)
+            deleted_count += result.rowcount
+        
+        for example in rejected_examples:
+            stmt = select(Embedding).where(
+                Embedding.entity_id == example.id,
+                Embedding.kind == "example"
+            )
+            result = await db.execute(stmt)
+            embeddings_to_delete = result.scalars().all()
+            embedding_ids_to_delete.extend([emb.id for emb in embeddings_to_delete])
+            
+            stmt = delete(Embedding).where(
+                Embedding.entity_id == example.id,
+                Embedding.kind == "example"
+            )
+            result = await db.execute(stmt)
+            deleted_count += result.rowcount
+        
+        # Phase 2: Delete from Qdrant (if this fails, PostgreSQL will rollback)
+        if embedding_ids_to_delete:
+            logger.info("Deleting from Qdrant", count=len(embedding_ids_to_delete))
+            await qdrant_store.delete_batch(embedding_ids_to_delete)
+        
+        # Phase 3: Commit PostgreSQL transaction
+        await db.commit()
+        logger.info("✅ Deletion transaction committed - both databases in sync", deleted=deleted_count)
+        
+    except Exception as e:
+        # Rollback PostgreSQL if Qdrant deletion fails
+        logger.error(
+            "❌ Error during embedding deletion - rolling back PostgreSQL transaction",
+            error=str(e),
+            catalog_id=catalog_id
+        )
+        await db.rollback()
+        raise  # Re-raise the original exception
     
     logger.info(
         "Rejected embeddings cleaned up",

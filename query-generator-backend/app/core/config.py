@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     # Database
     database_url: str = Field(..., env="DATABASE_URL")
     
+    # Qdrant Vector Database
+    qdrant_host: str = Field(default="localhost", env="QDRANT_HOST")
+    qdrant_port: int = Field(default=6333, env="QDRANT_PORT")
+    qdrant_grpc_port: int = Field(default=6334, env="QDRANT_GRPC_PORT")
+    qdrant_collection_name: str = Field(default="embeddings", env="QDRANT_COLLECTION_NAME")
+    qdrant_api_key: Optional[str] = Field(default=None, env="QDRANT_API_KEY")
+    
     # OpenAI
     openai_api_key: str = Field(..., env="OPENAI_API_KEY")
     embed_model: str = Field(default="text-embedding-3-large", env="EMBED_MODEL")
