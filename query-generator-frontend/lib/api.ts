@@ -14,6 +14,7 @@ export type {
   UserProfile,
   Catalog,
   SecurityPolicy,
+  UpdatePolicyRequest,
   CreateCatalogRequest,
   ApiResponse,
   PaginatedResponse,

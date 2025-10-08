@@ -13,11 +13,10 @@ import { Navigation } from "@/components/navigation"
 import { QueryGenerator } from "@/components/query-generator"
 import { QueryHistoryPage } from "@/components/query-history-page"
 import { ManageCatalogsPage } from "@/components/manage-catalogs-page"
-import { SecurityPoliciesPage } from "@/components/security-policies-page"
 import { UserSettingsPage } from "@/components/user-settings-page"
 import { getUserPermissions } from "@/lib/utils"
 
-type Page = "generate" | "catalogs" | "security" | "users" | "history"
+type Page = "generate" | "catalogs" | "users" | "history"
 
 export default function QueryGeneratorApp() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -270,7 +269,6 @@ export default function QueryGeneratorApp() {
               }}
             />
           )}
-          {currentPage === "security" && <SecurityPoliciesPage api={api} />}
           {currentPage === "users" && <UserSettingsPage api={api} />}
         </main>
       </div>

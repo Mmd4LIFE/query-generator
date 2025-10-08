@@ -2,9 +2,10 @@
 Policy models for SQL generation guardrails
 """
 import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import JSON, Boolean, Integer, String
+from sqlalchemy import JSON, Boolean, Integer, String, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -12,10 +13,17 @@ from app.models.base import Base, TimestampMixin, UUIDMixin
 
 
 class Policy(Base, UUIDMixin, TimestampMixin):
-    """Policy model for catalog-specific guardrails"""
+    """
+    Policy model for catalog-specific guardrails.
+    
+    Uses soft delete pattern:
+    - When policy is updated, old row is soft-deleted and new row is created
+    - Active policy is where deleted_at IS NULL
+    - This creates full audit trail of all policy changes
+    """
     __tablename__ = "dq_policies"
     
-    catalog_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, unique=True, index=True)
+    catalog_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     
     # Basic policies
     allow_write: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -38,9 +46,13 @@ class Policy(Base, UUIDMixin, TimestampMixin):
     # Additional settings
     settings: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True, default=dict)
     
-    # Authorship
+    # Authorship (soft delete pattern - no updated_by, only created_by and deleted_by)
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    
+    # Soft delete fields
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, default=None)
+    deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True, default=None)
     
     def __repr__(self) -> str:
-        return f"<Policy(catalog_id='{self.catalog_id}', allow_write={self.allow_write})>" 
+        status = "deleted" if self.deleted_at else "active"
+        return f"<Policy(catalog_id='{self.catalog_id}', status='{status}', allow_write={self.allow_write})>" 
