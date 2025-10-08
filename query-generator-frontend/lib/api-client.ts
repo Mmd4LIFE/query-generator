@@ -152,6 +152,10 @@ export interface SubmitFeedbackRequest {
 }
 
 // Policy Types
+// Uses soft delete pattern:
+// - When policy is "updated", old policy is soft-deleted and new policy is created
+// - This creates complete audit trail (no updated_by, only created_by and deleted_by)
+// - Active policy is where deleted_at IS NULL
 export interface SecurityPolicy {
   catalog_id: string
   allow_write: boolean
@@ -166,7 +170,6 @@ export interface SecurityPolicy {
   blocked_functions: string[] | null
   settings: Record<string, any>
   created_by: string
-  updated_by: string | null
 }
 
 export interface UpdatePolicyRequest {
@@ -648,7 +651,6 @@ LIMIT ${request.constraints?.max_rows || 100};`,
         blocked_functions: ['EXEC', 'DROP', 'DELETE', 'UPDATE', 'INSERT'],
         settings: {},
         created_by: 'demo-user',
-        updated_by: null,
       }
     }
 

@@ -35,8 +35,15 @@ router = APIRouter()
 
 
 async def get_catalog_policy(db: AsyncSession, catalog_id: uuid.UUID) -> Dict:
-    """Get policy for a catalog"""
-    stmt = select(Policy).where(Policy.catalog_id == catalog_id)
+    """Get active policy for a catalog (deleted_at IS NULL)"""
+    from sqlalchemy import and_
+    
+    stmt = select(Policy).where(
+        and_(
+            Policy.catalog_id == catalog_id,
+            Policy.deleted_at.is_(None)
+        )
+    )
     result = await db.execute(stmt)
     policy = result.scalar_one_or_none()
     

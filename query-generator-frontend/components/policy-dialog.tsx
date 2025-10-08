@@ -583,9 +583,9 @@ export function PolicyDialog({ api, catalogId, catalogName, open, onOpenChange }
         <div className="flex-shrink-0 flex items-center justify-between pt-4 border-t">
           <div className="text-sm text-muted-foreground">
             {policy ? (
-              <span>Last updated by {policy.updated_by || policy.created_by}</span>
+              <span>Current policy created by {policy.created_by}</span>
             ) : (
-              <span>Create new policy with default settings</span>
+              <span>No policy exists - will create with defaults</span>
             )}
           </div>
           <div className="flex space-x-2">
