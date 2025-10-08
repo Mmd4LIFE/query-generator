@@ -39,7 +39,8 @@ import {
   Eye,
   RefreshCw,
   ArrowLeft,
-  BookOpen
+  BookOpen,
+  Shield
 } from "lucide-react"
 import { QueryGeneratorAPI } from "@/lib/api"
 import { 
@@ -53,6 +54,7 @@ import {
   type DatabaseEngine
 } from "@/lib/catalog-utils"
 import { CatalogKnowledgeTab } from "./catalog-knowledge-tab"
+import { PolicyDialog } from "./policy-dialog"
 
 interface ManageCatalogsPageProps {
   api: QueryGeneratorAPI
@@ -82,6 +84,10 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
   const [previewJson, setPreviewJson] = useState<any>(null)
   const [reindexingCatalog, setReindexingCatalog] = useState<string | null>(null)
   const [isQueryCopied, setIsQueryCopied] = useState(false)
+  
+  // Policy dialog state
+  const [isPolicyDialogOpen, setIsPolicyDialogOpen] = useState(false)
+  const [selectedPolicyCatalog, setSelectedPolicyCatalog] = useState<any | null>(null)
   
   // File upload
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -308,6 +314,12 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
   const handleBackToList = () => {
     setSelectedCatalog(null)
     setViewMode('list')
+  }
+
+  const handleOpenPolicy = (catalog: any) => {
+    console.log('Opening policy for catalog:', catalog.catalog_name)
+    setSelectedPolicyCatalog(catalog)
+    setIsPolicyDialogOpen(true)
   }
 
   const formatDate = (dateString: string): string => {
@@ -911,6 +923,15 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
                           <Button 
                             variant="ghost" 
                             size="sm" 
+                            onClick={() => handleOpenPolicy(catalog)}
+                            title="Manage security policy"
+                            className="text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                          >
+                            <Shield className="w-4 h-4" />
+                          </Button>
+                          <Button 
+                            variant="ghost" 
+                            size="sm" 
                             onClick={() => handleReindex(catalog.id, catalog.catalog_name)}
                             disabled={reindexingCatalog === catalog.id}
                             title="Reindex catalog for AI embeddings"
@@ -930,6 +951,17 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
             )}
           </CardContent>
         </Card>
+
+        {/* Policy Dialog */}
+        {selectedPolicyCatalog && (
+          <PolicyDialog
+            api={api}
+            catalogId={selectedPolicyCatalog.id}
+            catalogName={selectedPolicyCatalog.catalog_name}
+            open={isPolicyDialogOpen}
+            onOpenChange={setIsPolicyDialogOpen}
+          />
+        )}
       </div>
     </div>
   )

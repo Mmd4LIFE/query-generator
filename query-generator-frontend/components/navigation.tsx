@@ -1,12 +1,12 @@
 "use client"
 
 import { Button } from "@/components/ui/button"
-import { Database, Zap, Shield, Users, History } from "lucide-react"
+import { Database, Zap, Users, History } from "lucide-react"
 import { cn, getUserPermissions } from "@/lib/utils"
 
 interface NavigationProps {
   currentPage: string
-  onPageChange: (page: "generate" | "catalogs" | "security" | "users" | "history") => void
+  onPageChange: (page: "generate" | "catalogs" | "users" | "history") => void
   permissions: ReturnType<typeof getUserPermissions>
 }
 
@@ -32,12 +32,6 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
       requiresPermission: () => permissions.canManageCatalogs,
     },
     {
-      id: "security" as const,
-      label: "Security Policies",
-      icon: Shield,
-      requiresPermission: () => permissions.canManageSecurityPolicies,
-    },
-    {
       id: "users" as const,
       label: "User Management",
       icon: Users,
@@ -45,7 +39,7 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
     },
   ]
 
-  const handlePageChange = (page: "generate" | "catalogs" | "security" | "users" | "history") => {
+  const handlePageChange = (page: "generate" | "catalogs" | "users" | "history") => {
     onPageChange(page)
   }
 

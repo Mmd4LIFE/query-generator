@@ -153,22 +153,34 @@ export interface SubmitFeedbackRequest {
 
 // Policy Types
 export interface SecurityPolicy {
+  catalog_id: string
   allow_write: boolean
-  default_limit: number
+  default_limit: number | null
   banned_tables: string[]
   banned_columns: string[]
   banned_schemas: string[]
   pii_tags: string[]
   pii_masking_enabled: boolean
-  max_rows_returned: number
-  allowed_functions: string[]
-  blocked_functions: string[]
-  settings: {
-    query_timeout: number
-    enable_explain: boolean
-    log_all_queries?: boolean
-    require_explanation?: boolean
-  }
+  max_rows_returned: number | null
+  allowed_functions: string[] | null
+  blocked_functions: string[] | null
+  settings: Record<string, any>
+  created_by: string
+  updated_by: string | null
+}
+
+export interface UpdatePolicyRequest {
+  allow_write?: boolean
+  default_limit?: number | null
+  banned_tables?: string[]
+  banned_columns?: string[]
+  banned_schemas?: string[]
+  pii_tags?: string[]
+  pii_masking_enabled?: boolean
+  max_rows_returned?: number | null
+  allowed_functions?: string[] | null
+  blocked_functions?: string[] | null
+  settings?: Record<string, any>
 }
 
 // Knowledge Management Types
@@ -623,6 +635,7 @@ LIMIT ${request.constraints?.max_rows || 100};`,
   async getPolicy(catalogId: string): Promise<SecurityPolicy> {
     if (this.demoMode) {
       return {
+        catalog_id: catalogId,
         allow_write: false,
         default_limit: 1000,
         banned_tables: ['user_passwords', 'api_keys'],
@@ -633,19 +646,16 @@ LIMIT ${request.constraints?.max_rows || 100};`,
         max_rows_returned: 10000,
         allowed_functions: ['COUNT', 'SUM', 'AVG', 'MAX', 'MIN'],
         blocked_functions: ['EXEC', 'DROP', 'DELETE', 'UPDATE', 'INSERT'],
-        settings: {
-          query_timeout: 30,
-          enable_explain: true,
-          log_all_queries: true,
-          require_explanation: true,
-        },
+        settings: {},
+        created_by: 'demo-user',
+        updated_by: null,
       }
     }
 
     return this.request<SecurityPolicy>(`/v1/policies/${catalogId}`)
   }
 
-  async updatePolicy(catalogId: string, policy: Partial<SecurityPolicy>): Promise<SecurityPolicy> {
+  async updatePolicy(catalogId: string, policy: UpdatePolicyRequest): Promise<SecurityPolicy> {
     return this.request<SecurityPolicy>(`/v1/policies/${catalogId}`, {
       method: 'PUT',
       body: JSON.stringify(policy),
