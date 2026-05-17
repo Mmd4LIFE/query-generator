@@ -149,7 +149,7 @@ async def generate_query(
         # Parse response
         try:
             response_json = json.loads(response_text)
-            generated_sql = response_json.get("sql", "")
+            generated_sql = response_json.get("sql")
             explanation = response_json.get("explanation", "")
         except json.JSONDecodeError:
             logger.error("Failed to parse OpenAI response as JSON", response=response_text)
@@ -157,10 +157,73 @@ async def generate_query(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to parse generated response"
             )
-        
+
+        # The strict prompt instructs the model to return sql=null when the
+        # retrieved context does not contain the tables/columns needed to
+        # answer the question. Surface that to the caller instead of
+        # crashing in guardrails (which would call len(None)).
+        if not generated_sql or not generated_sql.strip():
+            generation_time_ms = (time.time() - start_time) * 1000
+            history_entry = QueryHistory(
+                user_id=current_user.id,
+                catalog_id=request.catalog_id,
+                engine=request.engine,
+                question=request.question,
+                constraints=request.constraints.dict() if request.constraints else None,
+                generated_sql=None,
+                explanation=explanation or None,
+                syntax_valid=None,
+                model_used="gpt-4o",
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+                generation_time_ms=generation_time_ms,
+                context_chunks=len(context_chunks),
+                context_sources={
+                    "by_kind": {
+                        kind: len([c for c in context_chunks if c["kind"] == kind])
+                        for kind in set(c["kind"] for c in context_chunks)
+                    }
+                } if context_chunks else None,
+                status="no_sql",
+                error_message=None,
+            )
+            db.add(history_entry)
+            await db.commit()
+
+            logger.info(
+                "LLM declined to generate SQL — context insufficient",
+                user_id=current_user.id,
+                catalog_id=request.catalog_id,
+                context_chunks=len(context_chunks),
+                explanation=explanation,
+            )
+
+            return GenerationResponse(
+                sql=None,
+                explanation=explanation or "The model could not ground the answer in the provided catalog context.",
+                validation=ValidationInfo(
+                    syntax_valid=False,
+                    errors=["Model returned no SQL — the catalog likely does not contain the tables/columns needed for this question."],
+                    warnings=[],
+                    parsed_tables=[],
+                    parsed_columns=[],
+                ),
+                policy=PolicyInfo(
+                    allow_write=policy["allow_write"],
+                    default_limit_applied=False,
+                    banned_items_blocked=[],
+                    pii_masking_applied=False,
+                    violations=[],
+                ),
+                context_used=len(context_chunks),
+                generation_time_ms=generation_time_ms,
+                tokens_used=usage,
+            )
+
         # Apply guardrails
         guardrails_result = apply_guardrails(generated_sql, policy, request.engine)
-        
+
         # Format SQL with proper indentation and comment
         if guardrails_result.sql:
             guardrails_result.sql = format_sql(guardrails_result.sql, add_comment=True)
