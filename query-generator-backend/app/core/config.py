@@ -44,7 +44,7 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
     
     # Embedding settings
-    max_chunks: int = Field(default=12, env="MAX_CHUNKS")
+    max_chunks: int = Field(default=20, env="MAX_CHUNKS")
     embedding_dimension: int = Field(default=3072, env="EMBEDDING_DIMENSION")
     batch_size: int = Field(default=64, env="BATCH_SIZE")
     

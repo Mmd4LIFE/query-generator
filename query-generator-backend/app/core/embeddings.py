@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.openai_client import generate_embeddings
 from app.core.qdrant_client import qdrant_store
 from app.models.catalog import Catalog, CatalogObject
+from app.models.history import QueryFeedback, QueryHistory
 from app.models.knowledge import Example, Metric, Note
 from app.models.vector import Embedding
 
@@ -95,6 +96,29 @@ def create_metric_chunk(metric: Metric) -> str:
     if metric.tags:
         chunk_parts.append(f"Tags: {', '.join(metric.tags)}")
     
+    return "\n".join(chunk_parts)
+
+
+def create_correction_chunk(
+    question: str,
+    bad_sql: Optional[str],
+    suggested_sql: Optional[str],
+    improvement_notes: Optional[str],
+    engine: Optional[str] = None
+) -> str:
+    """Create a text chunk for a user correction (feedback)."""
+    chunk_parts = [
+        "User Correction",
+        f"Question: {question}",
+    ]
+    if engine:
+        chunk_parts.append(f"Engine: {engine}")
+    if improvement_notes:
+        chunk_parts.append(f"Issue / Rule: {improvement_notes}")
+    if bad_sql:
+        chunk_parts.append(f"Original (incorrect) SQL: {bad_sql}")
+    if suggested_sql:
+        chunk_parts.append(f"Correct SQL: {suggested_sql}")
     return "\n".join(chunk_parts)
 
 
@@ -251,6 +275,50 @@ async def process_knowledge_items(
     return chunks
 
 
+async def process_feedback_items(
+    db: AsyncSession,
+    catalog_id: uuid.UUID
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """
+    Turn actionable user feedback (suggested_sql or improvement_notes) into
+    correction chunks the retriever can surface for future similar questions.
+    """
+    # Join feedback with the originating history so we know the question
+    # and the (incorrect) SQL the user was correcting.
+    stmt = (
+        select(QueryFeedback, QueryHistory)
+        .join(QueryHistory, QueryFeedback.history_id == QueryHistory.id)
+        .where(QueryHistory.catalog_id == catalog_id)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    chunks = []
+    for feedback, history in rows:
+        # Only embed feedback that contains a teachable correction.
+        if not feedback.suggested_sql and not feedback.improvement_notes:
+            continue
+
+        content = create_correction_chunk(
+            question=history.question,
+            bad_sql=history.generated_sql,
+            suggested_sql=feedback.suggested_sql,
+            improvement_notes=feedback.improvement_notes,
+            engine=history.engine,
+        )
+        metadata = {
+            "catalog_id": str(catalog_id),
+            "kind": "correction",
+            "entity_id": str(feedback.id),
+            "history_id": str(history.id),
+            "engine": history.engine,
+        }
+        chunks.append((content, metadata))
+
+    logger.info("Created correction chunks", count=len(chunks))
+    return chunks
+
+
 async def create_embeddings_for_catalog(
     db: AsyncSession,
     catalog_id: uuid.UUID,
@@ -309,7 +377,8 @@ async def create_embeddings_for_catalog(
     # Get all chunks to embed
     object_chunks = await process_catalog_objects(db, catalog)
     knowledge_chunks = await process_knowledge_items(db, catalog_id)
-    all_chunks = object_chunks + knowledge_chunks
+    feedback_chunks = await process_feedback_items(db, catalog_id)
+    all_chunks = object_chunks + knowledge_chunks + feedback_chunks
     
     if not all_chunks:
         logger.warning("No chunks to embed", catalog_id=catalog_id)

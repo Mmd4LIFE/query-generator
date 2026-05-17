@@ -129,9 +129,11 @@ def format_sql(sql: str, add_comment: bool = True) -> str:
         flags=re.IGNORECASE
     )
     
-    # Clean up extra spaces around parentheses
-    formatted_sql = re.sub(r'\s*\(\s*', '(', formatted_sql)
-    formatted_sql = re.sub(r'\s*\)\s*', ')', formatted_sql)
+    # Clean up extra horizontal spaces around parentheses. Crucially, do NOT
+    # touch newlines here — `\s` would match `\n`, collapsing patterns like
+    # `)\nLIMIT 1000` into `)LIMIT 1000`. Use `[ \t]` to only strip spaces/tabs.
+    formatted_sql = re.sub(r'[ \t]*\([ \t]*', '(', formatted_sql)
+    formatted_sql = re.sub(r'[ \t]*\)[ \t]*', ')', formatted_sql)
     
     # Fix column list formatting in SELECT (handle AS aliases)
     formatted_sql = re.sub(

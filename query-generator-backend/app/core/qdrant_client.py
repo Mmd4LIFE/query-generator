@@ -200,15 +200,19 @@ class QdrantVectorStore:
                     )
             
             search_filter = Filter(must=must_conditions)
-            
-            # Perform search
-            results = self.client.search(
+
+            # `client.search()` was removed in qdrant-client >= 1.12; use
+            # `query_points()` which returns a `QueryResponse` whose `points`
+            # attribute is the list of `ScoredPoint`s.
+            response = self.client.query_points(
                 collection_name=self.collection_name,
-                query_vector=query_vector,
+                query=query_vector,
                 query_filter=search_filter,
-                limit=limit
+                limit=limit,
+                with_payload=True,
             )
-            
+            results = getattr(response, "points", response)
+
             # Format results
             formatted_results = []
             for result in results:

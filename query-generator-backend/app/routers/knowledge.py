@@ -9,7 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps.auth import require_admin, require_data_guy, require_user, User
+from app.core.embeddings import create_embeddings_for_catalog
+from app.deps.auth import (
+    get_user_active_role,
+    require_admin,
+    require_data_guy,
+    require_user,
+    User,
+)
 from app.deps.db import get_db
 from app.models.knowledge import Example, Metric, Note
 from app.schemas.knowledge import (
@@ -29,6 +36,34 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
+_TRUSTED_APPROVER_ROLES = {"admin", "super_admin"}
+
+
+def _is_trusted_approver(user: User) -> bool:
+    """Admins (and super_admins) skip the approval queue — their knowledge is
+    auto-approved and immediately embedded so the generator can use it."""
+    return get_user_active_role(user) in _TRUSTED_APPROVER_ROLES
+
+
+async def _reindex_catalog_safe(db: AsyncSession, catalog_id: uuid.UUID) -> None:
+    """Trigger an incremental reindex after a knowledge change.
+
+    Swallows errors so a failed embedding step never breaks the user-facing
+    create/approve response — the item is already persisted and the user can
+    retry reindex from the catalog page if needed.
+    """
+    if catalog_id is None:
+        return
+    try:
+        await create_embeddings_for_catalog(db, catalog_id, force=False)
+    except Exception as e:
+        logger.error(
+            "Auto-reindex failed after knowledge change",
+            catalog_id=catalog_id,
+            error=str(e),
+        )
+
+
 # Notes endpoints
 @router.post("/notes", response_model=NoteSchema)
 async def create_note(
@@ -36,21 +71,36 @@ async def create_note(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_data_guy)
 ):
-    """Create a new note (data_guy+ role required)"""
+    """Create a new note (data_guy+ role required).
+
+    Admin-created notes are auto-approved and the catalog is reindexed
+    immediately so the new content is available to the generator.
+    """
+    auto_approve = _is_trusted_approver(current_user)
     db_note = Note(
         title=note_create.title,
         content=note_create.content,
         tags=note_create.tags,
         catalog_id=note_create.catalog_id,
         created_by=current_user.id,
-        status="pending"
+        status="approved" if auto_approve else "pending",
+        approved_by=current_user.id if auto_approve else None,
     )
-    
+
     db.add(db_note)
     await db.commit()
     await db.refresh(db_note)
-    
-    logger.info("Note created", note_id=db_note.id, created_by=current_user.id)
+
+    logger.info(
+        "Note created",
+        note_id=db_note.id,
+        created_by=current_user.id,
+        status=db_note.status,
+    )
+
+    if auto_approve and db_note.catalog_id:
+        await _reindex_catalog_safe(db, db_note.catalog_id)
+
     return db_note
 
 
@@ -129,17 +179,21 @@ async def approve_note(
     
     note.status = approval.action + "d"  # "approve" -> "approved", "reject" -> "rejected"
     note.approved_by = current_user.id
-    
+
     await db.commit()
     await db.refresh(note)
-    
+
     logger.info(
         "Note approval updated",
         note_id=note_id,
         status=note.status,
         approved_by=current_user.id
     )
-    
+
+    # Approval/rejection both change what should be embedded, so refresh now.
+    if note.catalog_id:
+        await _reindex_catalog_safe(db, note.catalog_id)
+
     return ApprovalResponse(
         id=note.id,
         status=note.status,
@@ -155,7 +209,12 @@ async def create_metric(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_data_guy)
 ):
-    """Create a new metric (data_guy+ role required)"""
+    """Create a new metric (data_guy+ role required).
+
+    Admin-created metrics are auto-approved and the catalog is reindexed
+    immediately so the new content is available to the generator.
+    """
+    auto_approve = _is_trusted_approver(current_user)
     db_metric = Metric(
         name=metric_create.name,
         description=metric_create.description,
@@ -165,14 +224,24 @@ async def create_metric(
         catalog_id=metric_create.catalog_id,
         metric_metadata=metric_create.metric_metadata,
         created_by=current_user.id,
-        status="pending"
+        status="approved" if auto_approve else "pending",
+        approved_by=current_user.id if auto_approve else None,
     )
-    
+
     db.add(db_metric)
     await db.commit()
     await db.refresh(db_metric)
-    
-    logger.info("Metric created", metric_id=db_metric.id, created_by=current_user.id)
+
+    logger.info(
+        "Metric created",
+        metric_id=db_metric.id,
+        created_by=current_user.id,
+        status=db_metric.status,
+    )
+
+    if auto_approve and db_metric.catalog_id:
+        await _reindex_catalog_safe(db, db_metric.catalog_id)
+
     return db_metric
 
 
@@ -251,17 +320,20 @@ async def approve_metric(
     
     metric.status = approval.action + "d"
     metric.approved_by = current_user.id
-    
+
     await db.commit()
     await db.refresh(metric)
-    
+
     logger.info(
         "Metric approval updated",
         metric_id=metric_id,
         status=metric.status,
         approved_by=current_user.id
     )
-    
+
+    if metric.catalog_id:
+        await _reindex_catalog_safe(db, metric.catalog_id)
+
     return ApprovalResponse(
         id=metric.id,
         status=metric.status,
@@ -277,7 +349,12 @@ async def create_example(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_data_guy)
 ):
-    """Create a new example (data_guy+ role required)"""
+    """Create a new example (data_guy+ role required).
+
+    Admin-created examples are auto-approved and the catalog is reindexed
+    immediately so the new content is available to the generator.
+    """
+    auto_approve = _is_trusted_approver(current_user)
     db_example = Example(
         title=example_create.title,
         description=example_create.description,
@@ -287,14 +364,24 @@ async def create_example(
         catalog_id=example_create.catalog_id,
         example_metadata=example_create.example_metadata,
         created_by=current_user.id,
-        status="pending"
+        status="approved" if auto_approve else "pending",
+        approved_by=current_user.id if auto_approve else None,
     )
-    
+
     db.add(db_example)
     await db.commit()
     await db.refresh(db_example)
-    
-    logger.info("Example created", example_id=db_example.id, created_by=current_user.id)
+
+    logger.info(
+        "Example created",
+        example_id=db_example.id,
+        created_by=current_user.id,
+        status=db_example.status,
+    )
+
+    if auto_approve and db_example.catalog_id:
+        await _reindex_catalog_safe(db, db_example.catalog_id)
+
     return db_example
 
 
@@ -379,17 +466,20 @@ async def approve_example(
     
     example.status = approval.action + "d"
     example.approved_by = current_user.id
-    
+
     await db.commit()
     await db.refresh(example)
-    
+
     logger.info(
         "Example approval updated",
         example_id=example_id,
         status=example.status,
         approved_by=current_user.id
     )
-    
+
+    if example.catalog_id:
+        await _reindex_catalog_safe(db, example.catalog_id)
+
     return ApprovalResponse(
         id=example.id,
         status=example.status,
