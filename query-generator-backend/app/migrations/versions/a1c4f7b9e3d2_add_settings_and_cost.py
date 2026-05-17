@@ -1,7 +1,7 @@
 """Add dq_settings table and cost_usd column on dq_history
 
 Revision ID: a1c4f7b9e3d2
-Revises: d5ab2d2fe7c0
+Revises: 5f3a8c9d1e2b
 Create Date: 2026-05-17 13:00:00.000000
 
 """
@@ -13,7 +13,8 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "a1c4f7b9e3d2"
-down_revision: Union[str, None] = "d5ab2d2fe7c0"
+# Chain: initial → d5ab2d2fe7c0 → migrate_to_qdrant → 5f3a8c9d1e2b → THIS.
+down_revision: Union[str, None] = "5f3a8c9d1e2b"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
