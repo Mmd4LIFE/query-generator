@@ -207,6 +207,12 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
                   </p>
                 </div>
 
+                {/* Usage strip: surfaces what the live settings produced
+                    (model, tokens, cost, latency, context). Helps the admin
+                    notice when a model/temperature change actually moved
+                    the needle. */}
+                <UsageStrip queryResult={queryResult} />
+
                 <Tabs defaultValue="sql" className="w-full">
                   <TabsList className="grid w-full grid-cols-3 h-7 sm:h-8 mb-4">
                     <TabsTrigger value="sql" className="text-xs px-2">SQL</TabsTrigger>
@@ -321,3 +327,61 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
     </div>
   )
 }
+
+
+/**
+ * Small inline strip that shows what the live settings actually produced
+ * for the most recent generation: model, tokens, cost, latency, context.
+ * Helps spot when a Settings change moved the needle (good or bad).
+ */
+function UsageStrip({ queryResult }: { queryResult: QueryResult }) {
+  const model = queryResult.model_used ?? queryResult.tokens_used?.model
+  const totalTokens = queryResult.tokens_used?.total_tokens
+  const promptTokens = queryResult.tokens_used?.prompt_tokens
+  const completionTokens = queryResult.tokens_used?.completion_tokens
+  const cost = queryResult.cost_usd
+  const ms = queryResult.generation_time_ms
+  const ctx = queryResult.context_used
+
+  // Nothing useful to show — fall back to nothing instead of rendering an
+  // empty row of separators.
+  const haveAnything = model || totalTokens != null || cost != null || ms != null
+  if (!haveAnything) return null
+
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+      {model && (
+        <Badge variant="outline" className="text-[10px] font-mono">
+          {model}
+        </Badge>
+      )}
+      {typeof ctx === "number" && (
+        <span title="Retrieved context chunks">
+          ctx <span className="text-foreground font-medium">{ctx}</span>
+        </span>
+      )}
+      {typeof totalTokens === "number" && (
+        <span
+          title={
+            promptTokens != null && completionTokens != null
+              ? `prompt ${promptTokens.toLocaleString()} · completion ${completionTokens.toLocaleString()}`
+              : "Total tokens"
+          }
+        >
+          tok <span className="text-foreground font-medium">{totalTokens.toLocaleString()}</span>
+        </span>
+      )}
+      {typeof cost === "number" && (
+        <span title="OpenAI cost for this generation">
+          $<span className="text-foreground font-medium">{cost.toFixed(4)}</span>
+        </span>
+      )}
+      {typeof ms === "number" && (
+        <span>
+          <span className="text-foreground font-medium">{(ms / 1000).toFixed(2)}</span>s
+        </span>
+      )}
+    </div>
+  )
+}
+

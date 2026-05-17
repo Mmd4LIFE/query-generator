@@ -14,9 +14,10 @@ import { QueryGenerator } from "@/components/query-generator"
 import { QueryHistoryPage } from "@/components/query-history-page"
 import { ManageCatalogsPage } from "@/components/manage-catalogs-page"
 import { UserSettingsPage } from "@/components/user-settings-page"
+import { SettingsPage } from "@/components/settings-page"
 import { getUserPermissions } from "@/lib/utils"
 
-type Page = "generate" | "catalogs" | "users" | "history"
+type Page = "generate" | "catalogs" | "users" | "history" | "settings"
 
 export default function QueryGeneratorApp() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -270,6 +271,9 @@ export default function QueryGeneratorApp() {
             />
           )}
           {currentPage === "users" && <UserSettingsPage api={api} />}
+          {currentPage === "settings" && permissions.isAdmin && (
+            <SettingsPage api={api} />
+          )}
         </main>
       </div>
       

@@ -13,9 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.guardrails import apply_guardrails, validate_sql_syntax
+from app.core.model_registry import calculate_cost
 from app.core.openai_client import generate_sql
 from app.core.prompts import build_system_prompt, build_user_prompt, truncate_context
 from app.core.retrieval import build_context_string, retrieve_context
+from app.core.settings_service import get_value_standalone
 from app.utils.sql_formatter import format_sql
 from app.deps.auth import require_user, User
 from app.deps.db import get_db
@@ -147,15 +149,21 @@ async def generate_query(
             include_tables=request.include.tables if request.include else None
         )
         
-        # Build context string
+        # Build context string. Token budget comes from settings — defaults
+        # to 6000 when unset / unreachable.
+        try:
+            ctx_max = await get_value_standalone("retrieval.context_max_tokens")
+            ctx_max = int(ctx_max) if isinstance(ctx_max, int) else 6000
+        except Exception:
+            ctx_max = 6000
         context_string = build_context_string(context_chunks)
-        context_string = truncate_context(context_string, max_tokens=6000)
-        
-        # Build prompts
-        system_prompt = build_system_prompt(
+        context_string = truncate_context(context_string, max_tokens=ctx_max)
+
+        # Build prompts (system prompt is async — template comes from settings)
+        system_prompt = await build_system_prompt(
             dialect=request.engine,
             policy=policy,
-            catalog_name=catalog.catalog_name
+            catalog_name=catalog.catalog_name,
         )
         
         user_prompt = build_user_prompt(
@@ -186,6 +194,12 @@ async def generate_query(
         # crashing in guardrails (which would call len(None)).
         if not generated_sql or not generated_sql.strip():
             generation_time_ms = (time.time() - start_time) * 1000
+            model_used = usage.get("model") or "gpt-4o"
+            cost_usd = calculate_cost(
+                model_used,
+                usage.get("prompt_tokens"),
+                usage.get("completion_tokens"),
+            )
             history_entry = QueryHistory(
                 user_id=current_user.id,
                 catalog_id=request.catalog_id,
@@ -195,10 +209,11 @@ async def generate_query(
                 generated_sql=None,
                 explanation=explanation or None,
                 syntax_valid=None,
-                model_used="gpt-4o",
+                model_used=model_used,
                 prompt_tokens=usage.get("prompt_tokens"),
                 completion_tokens=usage.get("completion_tokens"),
                 total_tokens=usage.get("total_tokens"),
+                cost_usd=cost_usd,
                 generation_time_ms=generation_time_ms,
                 context_chunks=len(context_chunks),
                 context_sources={
@@ -241,6 +256,8 @@ async def generate_query(
                 context_used=len(context_chunks),
                 generation_time_ms=generation_time_ms,
                 tokens_used=usage,
+                model_used=model_used,
+                cost_usd=cost_usd,
             )
 
         # Apply guardrails
@@ -268,8 +285,16 @@ async def generate_query(
         )
         
         generation_time_ms = (time.time() - start_time) * 1000
-        
-        # Save to history
+
+        # Persist actual model from usage (so cost matches reality) plus
+        # a computed USD cost derived from the model_registry pricing.
+        model_used = usage.get("model") or "gpt-4o"
+        cost_usd = calculate_cost(
+            model_used,
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+        )
+
         history_entry = QueryHistory(
             user_id=current_user.id,
             catalog_id=request.catalog_id,
@@ -281,10 +306,11 @@ async def generate_query(
             syntax_valid=guardrails_result.syntax_valid,
             policy_violations={"violations": guardrails_result.violations} if guardrails_result.violations else None,
             guardrails_applied={"modifications": guardrails_result.modifications} if guardrails_result.modifications else None,
-            model_used="gpt-4o",
+            model_used=model_used,
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
             total_tokens=usage.get("total_tokens"),
+            cost_usd=cost_usd,
             generation_time_ms=generation_time_ms,
             context_chunks=len(context_chunks),
             context_sources={
@@ -316,7 +342,9 @@ async def generate_query(
             policy=policy_info,
             context_used=len(context_chunks),
             generation_time_ms=generation_time_ms,
-            tokens_used=usage
+            tokens_used=usage,
+            model_used=model_used,
+            cost_usd=cost_usd,
         )
         
     except Exception as e:

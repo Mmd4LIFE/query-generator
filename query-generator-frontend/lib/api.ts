@@ -20,5 +20,9 @@ export type {
   PaginatedResponse,
   QueryHistoryItem,
   QueryFeedback,
-  SubmitFeedbackRequest
+  SubmitFeedbackRequest,
+  SettingItem,
+  GenModelInfo,
+  EmbedModelInfo,
+  ModelRegistryResponse,
 } from './api-client'

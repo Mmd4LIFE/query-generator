@@ -18,14 +18,40 @@ logger = structlog.get_logger()
 
 # Per-kind retrieval budget. Corrections and examples are the most actionable
 # evidence for the LLM, so we always reserve slots for them and never let raw
-# schema chunks crowd them out.
-KIND_BUDGET = {
+# schema chunks crowd them out. Editable at runtime via the
+# `retrieval.kind_budget` setting; this dict is the safe fallback.
+DEFAULT_KIND_BUDGET = {
     "correction": 5,
     "example": 5,
     "metric": 3,
     "note": 3,
     "object": 15,
 }
+
+
+async def _get_kind_budget() -> Dict[str, int]:
+    """Read the live kind-budget from settings, falling back to the default."""
+    try:
+        from app.core.settings_service import get_value_standalone
+        value = await get_value_standalone("retrieval.kind_budget")
+        if isinstance(value, dict):
+            # Trust validation at write-time; coerce to int just in case.
+            return {k: int(v) for k, v in value.items()}
+    except Exception as e:
+        logger.warning("Falling back to default kind_budget", error=str(e))
+    return dict(DEFAULT_KIND_BUDGET)
+
+
+async def _get_max_chunks_setting() -> Optional[int]:
+    """Read the live overall cap from settings; None defers to caller default."""
+    try:
+        from app.core.settings_service import get_value_standalone
+        value = await get_value_standalone("retrieval.max_chunks")
+        if isinstance(value, int) and value > 0:
+            return value
+    except Exception as e:
+        logger.warning("Falling back to settings.max_chunks for cap", error=str(e))
+    return None
 
 
 async def _search_kind(
@@ -79,7 +105,8 @@ async def retrieve_context(
         logger.error("Failed to generate question embedding")
         return []
 
-    overall_limit = max_chunks or settings.max_chunks
+    overall_limit = max_chunks or (await _get_max_chunks_setting()) or settings.max_chunks
+    kind_budget = await _get_kind_budget()
 
     # Schema/table focus only narrows the schema-object search; corrections
     # and examples must remain visible even if the user passes `include`.
@@ -92,7 +119,7 @@ async def retrieve_context(
     try:
         # Run per-kind searches in parallel-ish (Qdrant client is sync but cheap).
         results_by_kind: Dict[str, List[Dict[str, Any]]] = {}
-        for kind, budget in KIND_BUDGET.items():
+        for kind, budget in kind_budget.items():
             extra = object_filters if kind == "object" else None
             results_by_kind[kind] = await _search_kind(
                 question_embedding=question_embedding,

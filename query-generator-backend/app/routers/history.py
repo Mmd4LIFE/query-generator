@@ -57,6 +57,8 @@ class HistoryResponse(BaseModel):
     generation_time_ms: Optional[float]
     created_at: str
     tokens_used: Optional[int]
+    cost_usd: Optional[float] = None
+    model_used: Optional[str] = None
     catalog_name: Optional[str] = None
 
     class Config:
@@ -155,6 +157,8 @@ async def get_history(
             generation_time_ms=history.generation_time_ms,
             created_at=history.created_at.isoformat(),
             tokens_used=history.total_tokens,
+            cost_usd=history.cost_usd,
+            model_used=history.model_used,
             catalog_name=catalog.catalog_name
         ))
     

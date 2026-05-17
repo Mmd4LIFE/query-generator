@@ -1,123 +1,112 @@
 """
-Prompt building for SQL generation
+Prompt building for SQL generation.
+
+The system-prompt body (rules / priorities / output instructions) is held
+as a DB-backed template — see `prompt.system_template` in the settings
+registry. This module reads it from the settings service, renders
+{dialect} / {catalog_name} placeholders, appends the per-request
+POLICIES section, then appends a fixed JSON RESPONSE FORMAT block.
 """
 from typing import Any, Dict, List, Optional
 
+from app.core.settings_registry import DEFAULT_SYSTEM_PROMPT_TEMPLATE
+from app.core.settings_service import get_value_standalone
 from app.schemas.generate import GenerationConstraints, GenerationIncludes
 
 
-def build_system_prompt(
-    dialect: str,
-    policy: Dict[str, Any],
-    catalog_name: str
-) -> str:
+# Fixed JSON-format trailer. We keep this in code (not settings) because
+# the route handler depends on the exact JSON contract (`sql` + `explanation`).
+_RESPONSE_FORMAT_BLOCK = """
+RESPONSE FORMAT:
+Always respond with valid JSON in this exact format:
+{
+  "sql": "SELECT * FROM schema.table LIMIT 100;",
+  "explanation": "Brief description of the query and which context guided it."
+}
+
+If the context lacks a required table or column, respond with:
+{
+  "sql": null,
+  "explanation": "Missing from catalog: <list the specific tables/columns needed>."
+}
+
+Do not include any text before or after the JSON response."""
+
+
+def _render_template(template: str, dialect: str, catalog_name: str) -> str:
+    """Render the editable template, surviving any stray braces in user content.
+
+    Only {dialect} and {catalog_name} are substituted — every other brace
+    is left alone, so admins can paste JSON examples into the template
+    without breaking str.format().
     """
-    Build system prompt for SQL generation.
-    
-    Args:
-        dialect: SQL dialect (postgres, mysql, etc.)
-        policy: Policy configuration
-        catalog_name: Name of the catalog
-        
-    Returns:
-        System prompt string
-    """
-    prompt_parts = [
-        f"You are an expert {dialect.upper()} SQL generator.",
-        f"You are working with the '{catalog_name}' database catalog.",
-        "",
-        "STRICT GROUNDING RULES (NON-NEGOTIABLE):",
-        "1. You MUST ONLY use tables, views, and columns that appear EXPLICITLY in the",
-        "   `=== RELEVANT CONTEXT ===` section below. Do not rename them, do not invent",
-        "   new ones based on prior knowledge of what a typical schema might look like.",
-        "2. For interpreting the MEANING of a column that exists in context, apply",
-        "   widely-known SQL/data-modeling conventions (the same heuristics any",
-        "   competent analyst would use when reading an unfamiliar schema). Be",
-        "   confident: a column whose name clearly implies a meaning has that meaning",
-        "   unless the context says otherwise.",
-        "3. For ANY catalog-specific semantics — what a column actually represents in",
-        "   this particular system, which timestamp to prefer, how enums encode",
-        "   business state — defer to the `--- USER CORRECTIONS ---`, `--- EXAMPLES ---`,",
-        "   `--- METRICS ---`, and `--- NOTES ---` sections. Those are catalog-scoped",
-        "   and override any default convention you might assume.",
-        "4. Return `\"sql\": null` ONLY when a literal table or column you need is",
-        "   ABSENT from the context — not when you are merely unsure about a column's",
-        "   semantic role. When you do return null, list the specific tables/columns",
-        "   that are missing so the operator can add them or write a Note.",
-        "",
-        "PRIORITY OF EVIDENCE (highest first):",
-        "  a. `--- USER CORRECTIONS ---` — past human feedback. These are AUTHORITATIVE.",
-        "     If a correction tells you which table/column to use, follow it.",
-        "  b. `--- EXAMPLES ---` — approved query patterns. Adapt them whenever the",
-        "     question is similar; do not deviate from their joins/filters without reason.",
-        "  c. `--- METRICS ---` — canonical metric definitions. Reuse the expression",
-        "     verbatim when the user asks for that metric.",
-        "  d. `--- DATABASE SCHEMA ---` — the source of truth for tables and columns.",
-        "  e. `--- NOTES ---` — additional guidelines.",
-        "",
-        "OUTPUT INSTRUCTIONS:",
-        "4. Always include proper JOINs when referencing multiple tables, using the",
-        "   join keys shown in foreign keys or in examples/corrections.",
-        "5. Return your response as a JSON object with `sql` and `explanation` fields.",
-        "6. The `sql` field must contain the complete, executable SQL query (or null",
-        "   if you cannot answer with the provided context).",
-        "7. The `explanation` field should briefly describe what the query does and,",
-        "   if relevant, which example/correction you followed.",
-        "",
-        "POLICIES AND CONSTRAINTS:"
-    ]
-    
-    # Add policy information
+    return (
+        template
+        .replace("{dialect}", dialect.upper())
+        .replace("{catalog_name}", catalog_name)
+    )
+
+
+def _build_policy_lines(policy: Dict[str, Any]) -> List[str]:
+    """The POLICIES block is request-specific (depends on the catalog's policy
+    row), so it's built in code and appended to the template."""
+    lines: List[str] = ["", "POLICIES AND CONSTRAINTS:"]
     if not policy.get("allow_write", False):
-        prompt_parts.append("- ONLY SELECT queries are allowed (no INSERT, UPDATE, DELETE, etc.)")
-    
+        lines.append("- ONLY SELECT queries are allowed (no INSERT, UPDATE, DELETE, etc.)")
+
     default_limit = policy.get("default_limit")
     if default_limit:
-        prompt_parts.append(f"- If no LIMIT is specified, a LIMIT of {default_limit} will be automatically added")
-    
-    banned_tables = policy.get("banned_tables", [])
+        lines.append(f"- If no LIMIT is specified, a LIMIT of {default_limit} will be automatically added")
+
+    banned_tables = policy.get("banned_tables") or []
     if banned_tables:
-        prompt_parts.append(f"- NEVER use these banned tables: {', '.join(banned_tables)}")
-    
-    banned_columns = policy.get("banned_columns", [])
+        lines.append(f"- NEVER use these banned tables: {', '.join(banned_tables)}")
+
+    banned_columns = policy.get("banned_columns") or []
     if banned_columns:
-        prompt_parts.append(f"- NEVER use these banned columns: {', '.join(banned_columns)}")
-    
-    banned_schemas = policy.get("banned_schemas", [])
+        lines.append(f"- NEVER use these banned columns: {', '.join(banned_columns)}")
+
+    banned_schemas = policy.get("banned_schemas") or []
     if banned_schemas:
-        prompt_parts.append(f"- NEVER use these banned schemas: {', '.join(banned_schemas)}")
-    
+        lines.append(f"- NEVER use these banned schemas: {', '.join(banned_schemas)}")
+
     max_rows = policy.get("max_rows_returned")
     if max_rows:
-        prompt_parts.append(f"- Maximum LIMIT allowed is {max_rows}")
-    
+        lines.append(f"- Maximum LIMIT allowed is {max_rows}")
+
     allowed_functions = policy.get("allowed_functions")
     if allowed_functions:
-        prompt_parts.append(f"- Only these functions are allowed: {', '.join(allowed_functions)}")
-    
+        lines.append(f"- Only these functions are allowed: {', '.join(allowed_functions)}")
+
     blocked_functions = policy.get("blocked_functions")
     if blocked_functions:
-        prompt_parts.append(f"- These functions are blocked: {', '.join(blocked_functions)}")
-    
-    prompt_parts.extend([
-        "",
-        "RESPONSE FORMAT:",
-        "Always respond with valid JSON in this exact format:",
-        '{',
-        '  "sql": "SELECT * FROM schema.table LIMIT 100;",',
-        '  "explanation": "Brief description of the query and which context guided it."',
-        '}',
-        "",
-        "If the context lacks a required table or column, respond with:",
-        '{',
-        '  "sql": null,',
-        '  "explanation": "Missing from catalog: <list the specific tables/columns needed>."',
-        '}',
-        "",
-        "Do not include any text before or after the JSON response."
-    ])
-    
-    return "\n".join(prompt_parts)
+        lines.append(f"- These functions are blocked: {', '.join(blocked_functions)}")
+
+    return lines
+
+
+async def build_system_prompt(
+    dialect: str,
+    policy: Dict[str, Any],
+    catalog_name: str,
+) -> str:
+    """
+    Build the system prompt for SQL generation.
+
+    Template comes from the settings service so admins can tune it without
+    a redeploy; falls back to the in-code default if the settings table
+    isn't reachable.
+    """
+    try:
+        template = await get_value_standalone("prompt.system_template")
+    except Exception:
+        template = DEFAULT_SYSTEM_PROMPT_TEMPLATE
+    if not isinstance(template, str) or not template.strip():
+        template = DEFAULT_SYSTEM_PROMPT_TEMPLATE
+
+    rendered = _render_template(template, dialect, catalog_name)
+    policy_block = "\n".join(_build_policy_lines(policy))
+    return f"{rendered}\n{policy_block}\n{_RESPONSE_FORMAT_BLOCK}"
 
 
 def build_user_prompt(
@@ -261,17 +250,16 @@ def estimate_prompt_tokens(text: str) -> int:
     return len(text) // 4
 
 
-def truncate_context(context: str, max_tokens: int = 6000) -> str:
+def truncate_context(context: str, max_tokens: Optional[int] = None) -> str:
     """
-    Truncate context to fit within token limit.
-    
-    Args:
-        context: Context string to truncate
-        max_tokens: Maximum number of tokens allowed
-        
-    Returns:
-        Truncated context string
+    Truncate context to fit within a token limit.
+
+    When `max_tokens` is None the cap comes from the settings table
+    (`retrieval.context_max_tokens`); call sites in production paths
+    should pass `None` so admins can tune this live.
     """
+    if max_tokens is None:
+        max_tokens = 6000  # safe sync fallback; live value resolved by caller
     estimated_tokens = estimate_prompt_tokens(context)
     
     if estimated_tokens <= max_tokens:

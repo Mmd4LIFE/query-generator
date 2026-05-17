@@ -98,7 +98,12 @@ class GenerationResponse(BaseModel):
     policy: PolicyInfo = Field(..., description="Policy enforcement results")
     context_used: int = Field(..., description="Number of context chunks used")
     generation_time_ms: float = Field(..., description="Generation time in milliseconds")
-    tokens_used: Optional[Dict[str, int]] = Field(None, description="Token usage statistics")
+    tokens_used: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Token usage + the live model name used for this call.",
+    )
+    model_used: Optional[str] = Field(None, description="Resolved chat model name.")
+    cost_usd: Optional[float] = Field(None, description="USD cost of this generation, from the model_registry pricing.")
 
 
 class ValidationRequest(BaseModel):

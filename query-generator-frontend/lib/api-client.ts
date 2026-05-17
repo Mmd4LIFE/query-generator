@@ -103,7 +103,13 @@ export interface QueryResult {
     prompt_tokens: number
     completion_tokens: number
     total_tokens: number
+    /** Live model name from the OpenAI usage object (read back from settings). */
+    model?: string
   }
+  /** Resolved chat model name (top-level mirror of tokens_used.model). */
+  model_used?: string | null
+  /** USD cost computed from the model_registry pricing table. */
+  cost_usd?: number | null
 }
 
 // Query History Types
@@ -119,10 +125,47 @@ export interface QueryHistoryItem {
   generation_time_ms?: number
   created_at: string
   tokens_used?: number
+  cost_usd?: number | null
+  model_used?: string | null
   // Additional fields for frontend display
   catalog_name?: string
   username?: string
   feedback?: QueryFeedback[]
+}
+
+// Settings types — match the backend's SettingItem schema
+export interface SettingItem {
+  key: string
+  category: string
+  description: string
+  ui_type: string
+  choices?: Array<{ value: string; label: string; description?: string }> | null
+  default: any
+  value: any
+  is_default: boolean
+  updated_at?: string | null
+  updated_by?: string | null
+}
+
+export interface GenModelInfo {
+  name: string
+  label: string
+  input_per_token: number
+  output_per_token: number
+  context_window: number
+  description: string
+}
+
+export interface EmbedModelInfo {
+  name: string
+  label: string
+  per_token: number
+  dimension: number
+}
+
+export interface ModelRegistryResponse {
+  gen_models: GenModelInfo[]
+  embed_models: EmbedModelInfo[]
 }
 
 export interface QueryFeedback {
@@ -1106,5 +1149,34 @@ ORDER BY month;`,
         improvement_notes: feedback.improvement_notes
       }),
     })
+  }
+
+  // -----------------------------------------------------------------------
+  // Settings — admin-only. Backed by /v1/settings (see backend routers).
+  // -----------------------------------------------------------------------
+
+  async listSettings(): Promise<SettingItem[]> {
+    return this.request<SettingItem[]>('/v1/settings')
+  }
+
+  async getSetting(key: string): Promise<SettingItem> {
+    return this.request<SettingItem>(`/v1/settings/${encodeURIComponent(key)}`)
+  }
+
+  async updateSetting(key: string, value: any): Promise<SettingItem> {
+    return this.request<SettingItem>(`/v1/settings/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ value }),
+    })
+  }
+
+  async resetSetting(key: string): Promise<SettingItem> {
+    return this.request<SettingItem>(`/v1/settings/${encodeURIComponent(key)}/reset`, {
+      method: 'POST',
+    })
+  }
+
+  async listModels(): Promise<ModelRegistryResponse> {
+    return this.request<ModelRegistryResponse>('/v1/settings/models')
   }
 } 
