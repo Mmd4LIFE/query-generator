@@ -1,8 +1,9 @@
 """
 RAG retrieval functionality
 """
+import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 import structlog
 from sqlalchemy import select
@@ -14,6 +15,132 @@ from app.core.qdrant_client import qdrant_store
 from app.models.vector import Embedding
 
 logger = structlog.get_logger()
+
+
+# -----------------------------------------------------------------------------
+# Table-reference extraction
+# -----------------------------------------------------------------------------
+
+# Matches `something.something` — covers both `schema.table` and `table.column`.
+# We can't always tell which is which without context, so we extract BOTH
+# identifiers and let the catalog lookup filter false positives (e.g. the
+# schema half of a `schema.table` won't match any real table name).
+_QUALIFIED_REF_RE = re.compile(r"\b([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)\b")
+
+# Matches `FROM table`, `JOIN table`, `UPDATE table`, `INTO table`, including
+# the optional schema-qualified or backtick/double-quote-quoted variants.
+_SQL_KEYWORD_REF_RE = re.compile(
+    r"\b(?:from|join|update|into)\s+[`\"]?([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?)[`\"]?",
+    re.IGNORECASE,
+)
+
+# SQL functions/keywords that look like identifiers and would otherwise be
+# captured by the patterns above. We strip them client-side so we don't waste
+# a PG round-trip looking up a table called `date` or `count`.
+_NON_TABLE_TOKENS = {
+    # SQL keywords that can appear after FROM/JOIN/UPDATE/INTO in subqueries
+    "select", "values", "lateral", "only", "table",
+    # Common functions seen in metric expressions / column names
+    "sum", "count", "avg", "min", "max", "date", "extract", "coalesce",
+    "nullif", "cast", "case", "when", "then", "else", "end", "null",
+    "true", "false", "and", "or", "not", "in", "exists", "between",
+    "like", "ilike", "is", "as", "on", "by", "group", "order", "having",
+    "where", "limit", "offset", "union", "intersect", "except",
+}
+
+
+def _extract_table_refs(text: str) -> Set[str]:
+    """Pull out candidate table-name tokens from chunk content.
+
+    Returns a set of lowercased identifiers — the caller looks them up
+    case-insensitively against the catalog. False positives (schema names,
+    function names that slipped through the filter) are harmless: they just
+    won't match any real table.
+    """
+    if not text:
+        return set()
+
+    candidates: Set[str] = set()
+
+    # 1. Qualified `a.b` — table.column OR schema.table.
+    for m in _QUALIFIED_REF_RE.finditer(text):
+        for ident in (m.group(1), m.group(2)):
+            tok = ident.lower()
+            if tok not in _NON_TABLE_TOKENS:
+                candidates.add(tok)
+
+    # 2. SQL keyword anchors — FROM/JOIN/UPDATE/INTO.
+    for m in _SQL_KEYWORD_REF_RE.finditer(text):
+        ref = m.group(1)
+        # `schema.table` → take the table portion (last component).
+        tail = ref.split(".")[-1].lower()
+        if tail not in _NON_TABLE_TOKENS:
+            candidates.add(tail)
+
+    return candidates
+
+
+async def _force_include_referenced_tables(
+    db: AsyncSession,
+    catalog_id: uuid.UUID,
+    knowledge_chunks: Iterable[Dict[str, Any]],
+    already_included_tables: Set[str],
+) -> List[Dict[str, Any]]:
+    """Find tables mentioned in retrieved knowledge (notes/examples/metrics/
+    corrections) and pull their schema chunks even if vector search didn't
+    surface them.
+
+    Why this matters: a Note like "GMV = sum of orders.filled_amount" has a
+    strong embedding match against a question about GMV, but the `orders`
+    table itself does NOT — so vector retrieval can give the LLM the
+    instruction without the schema it needs to follow it. This step bridges
+    that gap.
+    """
+    candidates: Set[str] = set()
+    for chunk in knowledge_chunks:
+        candidates |= _extract_table_refs(chunk.get("content", ""))
+
+    # Anything already in context — skip.
+    to_fetch = candidates - {t.lower() for t in already_included_tables if t}
+    if not to_fetch:
+        return []
+
+    # Load all object chunks for the catalog and match in Python. Object
+    # count per catalog is bounded (~one per table) so this is cheap and
+    # avoids dialect-specific JSON-operator gymnastics.
+    stmt = select(Embedding).where(
+        Embedding.catalog_id == catalog_id,
+        Embedding.kind == "object",
+    )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+
+    forced: List[Dict[str, Any]] = []
+    matched_lower: Set[str] = set()
+    for row in rows:
+        meta = row.embedding_metadata or {}
+        tbl = (meta.get("table") or "").lower()
+        if not tbl or tbl in matched_lower:
+            continue
+        if tbl in to_fetch:
+            forced.append({
+                "content": row.content,
+                "metadata": meta,
+                "kind": row.kind,
+                "score": 0.0,   # not from vector similarity
+                "distance": 1.0,
+                "forced": True,
+            })
+            matched_lower.add(tbl)
+
+    if forced:
+        logger.info(
+            "Force-included referenced tables",
+            count=len(forced),
+            tables=[m.get("metadata", {}).get("table") for m in forced],
+            candidates=sorted(to_fetch),
+        )
+    return forced
 
 
 # Per-kind retrieval budget. Corrections and examples are the most actionable
@@ -175,6 +302,30 @@ async def retrieve_context(
                 "distance": 1 - score,
             })
 
+        # Knowledge-driven force-include: when a Note/Example/Metric/Correction
+        # references a table (e.g. "GMV = sum of orders.filled_amount"), make
+        # sure that table's schema chunk reaches the LLM even if the question
+        # embedding didn't rank it in the top-N. Without this, the model gets
+        # the instruction without the schema needed to follow it.
+        knowledge = [
+            c for c in context_chunks
+            if c["kind"] in {"correction", "example", "metric", "note"}
+        ]
+        existing_tables = {
+            (c.get("metadata") or {}).get("table")
+            for c in context_chunks
+            if c["kind"] == "object"
+        }
+        existing_tables.discard(None)
+        forced = await _force_include_referenced_tables(
+            db=db,
+            catalog_id=catalog_id,
+            knowledge_chunks=knowledge,
+            already_included_tables=existing_tables,
+        )
+        if forced:
+            context_chunks.extend(forced)
+
         logger.info(
             "Context retrieved",
             chunks_found=len(context_chunks),
@@ -182,6 +333,7 @@ async def retrieve_context(
                 k: sum(1 for c in context_chunks if c["kind"] == k)
                 for k in priority_order
             },
+            forced_objects=len(forced),
             avg_score=(
                 sum(c["score"] for c in context_chunks) / len(context_chunks)
                 if context_chunks else 0
