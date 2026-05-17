@@ -24,7 +24,7 @@ KIND_BUDGET = {
     "example": 5,
     "metric": 3,
     "note": 3,
-    "object": 10,
+    "object": 15,
 }
 
 

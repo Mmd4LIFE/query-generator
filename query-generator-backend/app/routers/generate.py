@@ -4,10 +4,11 @@ Query generation router
 import json
 import time
 import uuid
-from typing import Dict
+from typing import Any, Dict, List, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +30,27 @@ from app.schemas.generate import (
     ValidationRequest,
     ValidationResponse,
 )
+
+
+class DebugChunk(BaseModel):
+    """A single retrieved context chunk, as fed to the LLM."""
+    kind: str
+    score: float
+    content: str
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class DebugRetrievalResponse(BaseModel):
+    """What the retriever would surface for a question — no LLM call."""
+    catalog_id: uuid.UUID
+    question: str
+    chunks_total: int
+    by_kind: Dict[str, int]
+    chunks: List[DebugChunk]
+    assembled_context: str = Field(
+        ..., description="The exact context string that would be sent to the LLM."
+    )
+    estimated_context_tokens: int
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -374,4 +396,63 @@ async def validate_query(
     return ValidationResponse(
         validation=validation_info,
         policy=policy_info
-    ) 
+    )
+
+
+@router.post("/generate/debug", response_model=DebugRetrievalResponse)
+async def debug_retrieval(
+    request: GenerationRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_user),
+):
+    """
+    Inspect what the retriever would surface for a question, without
+    calling OpenAI for generation. Use this to diagnose whether the
+    right tables/examples/corrections are reaching the LLM.
+
+    Same request body as `/generate`. Returns the chunks (kind, score,
+    content, metadata), the exact assembled context string the LLM would
+    see, and a rough token estimate.
+    """
+    # Validate catalog exists/is active (same as /generate)
+    stmt = select(Catalog).where(Catalog.id == request.catalog_id)
+    result = await db.execute(stmt)
+    catalog = result.scalar_one_or_none()
+    if not catalog:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Catalog not found")
+    if not catalog.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Catalog is not active")
+
+    context_chunks = await retrieve_context(
+        db=db,
+        question=request.question,
+        catalog_id=request.catalog_id,
+        include_schemas=request.include.schemas if request.include else None,
+        include_tables=request.include.tables if request.include else None,
+    )
+
+    assembled = build_context_string(context_chunks)
+    truncated = truncate_context(assembled, max_tokens=6000)
+
+    by_kind: Dict[str, int] = {}
+    for c in context_chunks:
+        by_kind[c["kind"]] = by_kind.get(c["kind"], 0) + 1
+
+    return DebugRetrievalResponse(
+        catalog_id=request.catalog_id,
+        question=request.question,
+        chunks_total=len(context_chunks),
+        by_kind=by_kind,
+        chunks=[
+            DebugChunk(
+                kind=c["kind"],
+                score=c["score"],
+                content=c["content"],
+                metadata=c.get("metadata"),
+            )
+            for c in context_chunks
+        ],
+        assembled_context=truncated,
+        # Same heuristic as truncate_context (1 token ≈ 4 chars).
+        estimated_context_tokens=len(truncated) // 4,
+    )
