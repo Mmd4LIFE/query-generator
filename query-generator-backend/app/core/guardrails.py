@@ -285,9 +285,17 @@ def apply_guardrails(
         GuardrailsResult with validation results and modified SQL
     """
     result = GuardrailsResult()
-    
+
+    # Defensive: callers may now pass None when the model declines to
+    # generate SQL (strict-grounding refusal). Treat that as a syntax error
+    # rather than crashing on len(None) / sqlglot.parse_one(None).
+    if not sql:
+        result.syntax_valid = False
+        result.errors.append("Empty SQL — nothing to validate.")
+        return result
+
     logger.info("Applying guardrails", sql_length=len(sql), dialect=dialect)
-    
+
     # Parse SQL
     parsed_sql, parse_errors = parse_sql(sql, dialect)
     if parse_errors:

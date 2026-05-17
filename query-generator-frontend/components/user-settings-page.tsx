@@ -32,6 +32,11 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingUser, setEditingUser] = useState<any>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  // user_id → aggregate over dq_history.cost_usd. Keyed lookup so the table
+  // renders in one pass; users with no history simply show $0.0000.
+  const [costByUser, setCostByUser] = useState<
+    Record<string, { total_cost_usd: number; total_queries: number; total_tokens: number }>
+  >({})
 
   // Helper function to get user's primary role (highest priority)
   const getUserRole = (user: any): string => {
@@ -80,7 +85,26 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
 
   useEffect(() => {
     loadUsers()
+    loadCostSummary()
   }, [])
+
+  const loadCostSummary = async () => {
+    // Fire-and-log: cost table is informational, never block the page on it.
+    try {
+      const rows = await api.getUsersCostSummary()
+      const map: Record<string, { total_cost_usd: number; total_queries: number; total_tokens: number }> = {}
+      for (const r of rows) {
+        map[r.user_id] = {
+          total_cost_usd: r.total_cost_usd,
+          total_queries: r.total_queries,
+          total_tokens: r.total_tokens,
+        }
+      }
+      setCostByUser(map)
+    } catch (e) {
+      console.error('Failed to load user cost summary:', e)
+    }
+  }
 
   const loadUsers = async () => {
     setIsLoading(true)
@@ -416,6 +440,7 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
                     <TableHead>Status</TableHead>
                     <TableHead>Last Login</TableHead>
                     <TableHead>Created</TableHead>
+                    <TableHead className="text-right">Cost (USD)</TableHead>
                     <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -449,11 +474,24 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
                       </TableCell>
                       <TableCell>{formatDate(user.last_login)}</TableCell>
                       <TableCell>{formatDate(user.created_at)}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {(() => {
+                          const c = costByUser[user.id]
+                          if (!c) return <span className="text-muted-foreground">$0.0000</span>
+                          return (
+                            <span
+                              title={`${c.total_queries.toLocaleString()} queries · ${c.total_tokens.toLocaleString()} tokens`}
+                            >
+                              ${c.total_cost_usd.toFixed(4)}
+                            </span>
+                          )
+                        })()}
+                      </TableCell>
                       <TableCell>
                         <div className="flex items-center space-x-2">
-                          <Button 
-                            variant="ghost" 
-                            size="sm" 
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => handleEdit(user)}
                             title="Edit user details"
                           >
@@ -484,7 +522,7 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
                       console.error('Error rendering user row:', error, 'for user:', user)
                       return (
                         <TableRow key={user.id || Math.random()}>
-                          <TableCell colSpan={8} className="text-center text-red-500">
+                          <TableCell colSpan={9} className="text-center text-red-500">
                             Error displaying user: {user.username || 'Unknown'}
                           </TableCell>
                         </TableRow>

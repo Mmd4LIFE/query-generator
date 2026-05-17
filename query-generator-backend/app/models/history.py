@@ -38,6 +38,7 @@ class QueryHistory(Base, UUIDMixin, TimestampMixin):
     prompt_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     generation_time_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     
     # Retrieval context (redacted for privacy)

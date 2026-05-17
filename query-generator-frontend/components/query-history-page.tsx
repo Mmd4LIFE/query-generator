@@ -288,13 +288,20 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                               <Calendar className="w-3 h-3" />
                               <span>{formatDate(item.created_at)}</span>
                             </div>
+                            {typeof item.cost_usd === "number" && (
+                              <div className="flex items-center space-x-1" title="OpenAI cost for this generation">
+                                <span>${item.cost_usd.toFixed(4)}</span>
+                              </div>
+                            )}
                           </div>
                           <div className="flex items-center space-x-2">
+                            {item.model_used && (
+                              <Badge variant="outline" className="text-xs">
+                                {item.model_used}
+                              </Badge>
+                            )}
                             <Badge variant="outline" className="text-xs">
                               {item.engine}
-                            </Badge>
-                            <Badge variant="outline" className="text-xs">
-                              {item.catalog_name}
                             </Badge>
                           </div>
                         </div>
@@ -323,12 +330,42 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                   <h3 className="font-semibold text-lg truncate">
                     {selectedQuery.question}
                   </h3>
-                  <div className="flex items-center space-x-2 mt-1 text-sm text-muted-foreground">
+                  <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mt-1 text-sm text-muted-foreground">
                     <span>{formatDate(selectedQuery.created_at)}</span>
                     <span>•</span>
                     <span>{selectedQuery.engine}</span>
                     <span>•</span>
                     <span>{selectedQuery.catalog_name}</span>
+                    {selectedQuery.model_used && (
+                      <>
+                        <span>•</span>
+                        <Badge variant="outline" className="text-[10px] font-mono">
+                          {selectedQuery.model_used}
+                        </Badge>
+                      </>
+                    )}
+                    {typeof selectedQuery.tokens_used === "number" && (
+                      <>
+                        <span>•</span>
+                        <span title="Total tokens (prompt + completion)">
+                          {selectedQuery.tokens_used.toLocaleString()} tok
+                        </span>
+                      </>
+                    )}
+                    {typeof selectedQuery.cost_usd === "number" && (
+                      <>
+                        <span>•</span>
+                        <span title="OpenAI cost for this generation">
+                          ${selectedQuery.cost_usd.toFixed(4)}
+                        </span>
+                      </>
+                    )}
+                    {typeof selectedQuery.generation_time_ms === "number" && (
+                      <>
+                        <span>•</span>
+                        <span>{(selectedQuery.generation_time_ms / 1000).toFixed(2)}s</span>
+                      </>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center space-x-2">

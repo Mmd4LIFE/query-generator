@@ -12,8 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
+from app.core.settings_service import seed_defaults as seed_settings_defaults
 from app.deps.db import create_db_and_tables
 from app.routers import auth, catalogs, generate, history, knowledge, policies
+from app.routers import settings as settings_router
 
 
 # Configure structured logging
@@ -46,7 +48,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize database
     await create_db_and_tables()
     logger.info("Database initialized")
-    
+
+    # Seed default settings so the Settings UI has rows on fresh installs.
+    try:
+        await seed_settings_defaults()
+    except Exception as e:
+        logger.error("Failed to seed default settings", error=str(e))
+
     yield
     
     logger.info("Shutting down Query Generator Framework")
@@ -142,6 +150,7 @@ app.include_router(knowledge.router, prefix="/v1", tags=["knowledge"])
 app.include_router(policies.router, prefix="/v1/policies", tags=["policies"])
 app.include_router(generate.router, prefix="/v1", tags=["generation"])
 app.include_router(history.router, prefix="/v1/history", tags=["history"])
+app.include_router(settings_router.router, prefix="/v1/settings", tags=["settings"])
 
 
 if __name__ == "__main__":

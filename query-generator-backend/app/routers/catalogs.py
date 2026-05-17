@@ -166,21 +166,43 @@ async def create_catalog(
     
     await db.commit()
     await db.refresh(db_catalog)
-    
+
+    # Auto-embed on import. Without this, retrieval returns zero chunks
+    # until the user manually clicks Reindex, and the LLM falls back to
+    # its training prior (hallucinating tables/columns).
+    try:
+        created, updated = await create_embeddings_for_catalog(
+            db, db_catalog.id, force=False
+        )
+        logger.info(
+            "Catalog auto-embedded after import",
+            catalog_id=db_catalog.id,
+            created=created,
+            updated=updated,
+        )
+    except Exception as e:
+        # Don't fail the import if embeddings fail — the catalog is saved
+        # and the user can retry via the Reindex button.
+        logger.error(
+            "Auto-embedding failed after catalog import",
+            catalog_id=db_catalog.id,
+            error=str(e),
+        )
+
     # Load objects for response
     stmt = select(Catalog).options(selectinload(Catalog.objects)).where(
         Catalog.id == db_catalog.id
     )
     result = await db.execute(stmt)
     catalog_with_objects = result.scalar_one()
-    
+
     logger.info(
         "Catalog created",
         catalog_id=db_catalog.id,
         objects_count=len(objects),
         created_by=current_user.id
     )
-    
+
     return catalog_with_objects
 
 

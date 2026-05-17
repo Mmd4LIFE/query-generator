@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.embeddings import create_embeddings_for_catalog
 from app.deps.auth import require_user, User
 from app.deps.db import get_db
 from app.models.auth import User as UserModel
@@ -18,6 +19,29 @@ from app.models.catalog import Catalog
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+
+async def _reindex_for_feedback(
+    db: AsyncSession,
+    history: QueryHistory,
+    feedback: QueryFeedback,
+) -> None:
+    """Embed actionable feedback so future similar questions benefit from it.
+
+    Only reindex when the user provided a teachable correction
+    (suggested_sql or improvement_notes); pure ratings carry no LLM signal.
+    """
+    if not feedback.suggested_sql and not feedback.improvement_notes:
+        return
+    try:
+        await create_embeddings_for_catalog(db, history.catalog_id, force=False)
+    except Exception as e:
+        logger.error(
+            "Auto-reindex failed after feedback",
+            catalog_id=history.catalog_id,
+            history_id=history.id,
+            error=str(e),
+        )
 
 
 class HistoryResponse(BaseModel):
@@ -33,6 +57,8 @@ class HistoryResponse(BaseModel):
     generation_time_ms: Optional[float]
     created_at: str
     tokens_used: Optional[int]
+    cost_usd: Optional[float] = None
+    model_used: Optional[str] = None
     catalog_name: Optional[str] = None
 
     class Config:
@@ -131,6 +157,8 @@ async def get_history(
             generation_time_ms=history.generation_time_ms,
             created_at=history.created_at.isoformat(),
             tokens_used=history.total_tokens,
+            cost_usd=history.cost_usd,
+            model_used=history.model_used,
             catalog_name=catalog.catalog_name
         ))
     
@@ -259,7 +287,7 @@ async def create_feedback(
         db.add(feedback)
         await db.commit()
         await db.refresh(feedback)
-        
+
         logger.info(
             "Feedback created",
             feedback_id=feedback.id,
@@ -267,7 +295,10 @@ async def create_feedback(
             user_id=current_user.id,
             rating=feedback_create.rating
         )
-    
+
+    # Re-embed the catalog so the correction is available to future generations.
+    await _reindex_for_feedback(db, history, feedback)
+
     return FeedbackResponse(
         id=feedback.id,
         history_id=feedback.history_id,

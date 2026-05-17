@@ -31,9 +31,16 @@ async def generate_embeddings(texts: List[str]) -> List[List[float]]:
     
     try:
         logger.info("Generating embeddings", count=len(texts), model=settings.embed_model)
-        
-        # Process in batches to avoid rate limits
-        batch_size = settings.batch_size
+
+        # Batch size is admin-tunable via settings; env stays as the floor.
+        from app.core.settings_service import get_value_standalone
+        try:
+            batch_size = await get_value_standalone("embeddings.batch_size")
+            if not isinstance(batch_size, int) or batch_size < 1:
+                batch_size = settings.batch_size
+        except Exception:
+            batch_size = settings.batch_size
+
         embeddings = []
         
         for i in range(0, len(texts), batch_size):
@@ -64,49 +71,73 @@ async def generate_sql(
     prompt: str,
     system_prompt: str,
     max_tokens: Optional[int] = None,
-    temperature: Optional[float] = None
+    temperature: Optional[float] = None,
 ) -> Tuple[str, Dict]:
     """
     Generate SQL using OpenAI's chat completion API.
-    
-    Args:
-        prompt: User prompt with context and question
-        system_prompt: System prompt with instructions and policies
-        max_tokens: Maximum tokens to generate
-        temperature: Sampling temperature
-        
+
+    Model, max_tokens, and temperature come from the live settings table
+    so admins can tune them without a redeploy. Explicit arguments still
+    win when provided (used for tests / future per-request overrides).
+
     Returns:
-        Tuple of (generated_text, usage_info)
+        Tuple of (generated_text, usage_info). `usage_info` carries the
+        model name so callers can compute cost from `model_registry`.
     """
+    from app.core.settings_service import get_value_standalone
+
+    # Resolve live settings, with env values as the safety net.
     try:
-        logger.info("Generating SQL", model=settings.gen_model)
-        
+        model = await get_value_standalone("generation.gen_model")
+        if not isinstance(model, str) or not model.strip():
+            model = settings.gen_model
+    except Exception:
+        model = settings.gen_model
+
+    if max_tokens is None:
+        try:
+            v = await get_value_standalone("generation.max_tokens")
+            max_tokens = int(v) if isinstance(v, int) else settings.max_tokens
+        except Exception:
+            max_tokens = settings.max_tokens
+
+    if temperature is None:
+        try:
+            v = await get_value_standalone("generation.temperature")
+            temperature = float(v) if isinstance(v, (int, float)) else settings.temperature
+        except Exception:
+            temperature = settings.temperature
+
+    try:
+        logger.info("Generating SQL", model=model, temperature=temperature, max_tokens=max_tokens)
+
         response = await client.chat.completions.create(
-            model=settings.gen_model,
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt},
             ],
-            max_tokens=max_tokens or settings.max_tokens,
-            temperature=temperature or settings.temperature,
-            response_format={"type": "json_object"}
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format={"type": "json_object"},
         )
-        
+
         content = response.choices[0].message.content
         usage = {
             "prompt_tokens": response.usage.prompt_tokens,
             "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens
+            "total_tokens": response.usage.total_tokens,
+            "model": model,
         }
-        
+
         logger.info(
             "SQL generated successfully",
             usage=usage,
-            finish_reason=response.choices[0].finish_reason
+            finish_reason=response.choices[0].finish_reason,
         )
-        
+
         return content, usage
-        
+
     except Exception as e:
         logger.error("Failed to generate SQL", error=str(e))
         raise

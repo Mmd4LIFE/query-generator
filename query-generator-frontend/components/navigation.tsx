@@ -1,12 +1,19 @@
 "use client"
 
 import { Button } from "@/components/ui/button"
-import { Database, Zap, Users, History } from "lucide-react"
+import { Database, Zap, Users, History, Settings } from "lucide-react"
 import { cn, getUserPermissions } from "@/lib/utils"
+
+export type AppPage =
+  | "generate"
+  | "catalogs"
+  | "users"
+  | "history"
+  | "settings"
 
 interface NavigationProps {
   currentPage: string
-  onPageChange: (page: "generate" | "catalogs" | "users" | "history") => void
+  onPageChange: (page: AppPage) => void
   permissions: ReturnType<typeof getUserPermissions>
 }
 
@@ -37,9 +44,17 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
       icon: Users,
       requiresPermission: () => permissions.canManageUsers,
     },
+    {
+      id: "settings" as const,
+      label: "Settings",
+      icon: Settings,
+      // Settings is admin-only — same gate as user management since both
+      // edit system-wide state.
+      requiresPermission: () => permissions.isAdmin,
+    },
   ]
 
-  const handlePageChange = (page: "generate" | "catalogs" | "users" | "history") => {
+  const handlePageChange = (page: AppPage) => {
     onPageChange(page)
   }
 

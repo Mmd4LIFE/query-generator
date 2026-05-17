@@ -4,17 +4,20 @@ Query generation router
 import json
 import time
 import uuid
-from typing import Dict
+from typing import Any, Dict, List, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.guardrails import apply_guardrails, validate_sql_syntax
+from app.core.model_registry import calculate_cost
 from app.core.openai_client import generate_sql
 from app.core.prompts import build_system_prompt, build_user_prompt, truncate_context
 from app.core.retrieval import build_context_string, retrieve_context
+from app.core.settings_service import get_value_standalone
 from app.utils.sql_formatter import format_sql
 from app.deps.auth import require_user, User
 from app.deps.db import get_db
@@ -29,6 +32,27 @@ from app.schemas.generate import (
     ValidationRequest,
     ValidationResponse,
 )
+
+
+class DebugChunk(BaseModel):
+    """A single retrieved context chunk, as fed to the LLM."""
+    kind: str
+    score: float
+    content: str
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class DebugRetrievalResponse(BaseModel):
+    """What the retriever would surface for a question — no LLM call."""
+    catalog_id: uuid.UUID
+    question: str
+    chunks_total: int
+    by_kind: Dict[str, int]
+    chunks: List[DebugChunk]
+    assembled_context: str = Field(
+        ..., description="The exact context string that would be sent to the LLM."
+    )
+    estimated_context_tokens: int
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -125,15 +149,21 @@ async def generate_query(
             include_tables=request.include.tables if request.include else None
         )
         
-        # Build context string
+        # Build context string. Token budget comes from settings — defaults
+        # to 6000 when unset / unreachable.
+        try:
+            ctx_max = await get_value_standalone("retrieval.context_max_tokens")
+            ctx_max = int(ctx_max) if isinstance(ctx_max, int) else 6000
+        except Exception:
+            ctx_max = 6000
         context_string = build_context_string(context_chunks)
-        context_string = truncate_context(context_string, max_tokens=6000)
-        
-        # Build prompts
-        system_prompt = build_system_prompt(
+        context_string = truncate_context(context_string, max_tokens=ctx_max)
+
+        # Build prompts (system prompt is async — template comes from settings)
+        system_prompt = await build_system_prompt(
             dialect=request.engine,
             policy=policy,
-            catalog_name=catalog.catalog_name
+            catalog_name=catalog.catalog_name,
         )
         
         user_prompt = build_user_prompt(
@@ -149,7 +179,7 @@ async def generate_query(
         # Parse response
         try:
             response_json = json.loads(response_text)
-            generated_sql = response_json.get("sql", "")
+            generated_sql = response_json.get("sql")
             explanation = response_json.get("explanation", "")
         except json.JSONDecodeError:
             logger.error("Failed to parse OpenAI response as JSON", response=response_text)
@@ -157,10 +187,82 @@ async def generate_query(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to parse generated response"
             )
-        
+
+        # The strict prompt instructs the model to return sql=null when the
+        # retrieved context does not contain the tables/columns needed to
+        # answer the question. Surface that to the caller instead of
+        # crashing in guardrails (which would call len(None)).
+        if not generated_sql or not generated_sql.strip():
+            generation_time_ms = (time.time() - start_time) * 1000
+            model_used = usage.get("model") or "gpt-4o"
+            cost_usd = calculate_cost(
+                model_used,
+                usage.get("prompt_tokens"),
+                usage.get("completion_tokens"),
+            )
+            history_entry = QueryHistory(
+                user_id=current_user.id,
+                catalog_id=request.catalog_id,
+                engine=request.engine,
+                question=request.question,
+                constraints=request.constraints.dict() if request.constraints else None,
+                generated_sql=None,
+                explanation=explanation or None,
+                syntax_valid=None,
+                model_used=model_used,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+                cost_usd=cost_usd,
+                generation_time_ms=generation_time_ms,
+                context_chunks=len(context_chunks),
+                context_sources={
+                    "by_kind": {
+                        kind: len([c for c in context_chunks if c["kind"] == kind])
+                        for kind in set(c["kind"] for c in context_chunks)
+                    }
+                } if context_chunks else None,
+                status="no_sql",
+                error_message=None,
+            )
+            db.add(history_entry)
+            await db.commit()
+
+            logger.info(
+                "LLM declined to generate SQL — context insufficient",
+                user_id=current_user.id,
+                catalog_id=request.catalog_id,
+                context_chunks=len(context_chunks),
+                explanation=explanation,
+            )
+
+            return GenerationResponse(
+                sql=None,
+                explanation=explanation or "The model could not ground the answer in the provided catalog context.",
+                validation=ValidationInfo(
+                    syntax_valid=False,
+                    errors=["Model returned no SQL — the catalog likely does not contain the tables/columns needed for this question."],
+                    warnings=[],
+                    parsed_tables=[],
+                    parsed_columns=[],
+                ),
+                policy=PolicyInfo(
+                    allow_write=policy["allow_write"],
+                    default_limit_applied=False,
+                    banned_items_blocked=[],
+                    pii_masking_applied=False,
+                    violations=[],
+                ),
+                context_used=len(context_chunks),
+                generation_time_ms=generation_time_ms,
+                tokens_used=usage,
+                model_used=model_used,
+                cost_usd=cost_usd,
+            )
+
         # Apply guardrails
         guardrails_result = apply_guardrails(generated_sql, policy, request.engine)
-        
+
         # Format SQL with proper indentation and comment
         if guardrails_result.sql:
             guardrails_result.sql = format_sql(guardrails_result.sql, add_comment=True)
@@ -183,8 +285,16 @@ async def generate_query(
         )
         
         generation_time_ms = (time.time() - start_time) * 1000
-        
-        # Save to history
+
+        # Persist actual model from usage (so cost matches reality) plus
+        # a computed USD cost derived from the model_registry pricing.
+        model_used = usage.get("model") or "gpt-4o"
+        cost_usd = calculate_cost(
+            model_used,
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+        )
+
         history_entry = QueryHistory(
             user_id=current_user.id,
             catalog_id=request.catalog_id,
@@ -196,10 +306,11 @@ async def generate_query(
             syntax_valid=guardrails_result.syntax_valid,
             policy_violations={"violations": guardrails_result.violations} if guardrails_result.violations else None,
             guardrails_applied={"modifications": guardrails_result.modifications} if guardrails_result.modifications else None,
-            model_used="gpt-4o",
+            model_used=model_used,
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
             total_tokens=usage.get("total_tokens"),
+            cost_usd=cost_usd,
             generation_time_ms=generation_time_ms,
             context_chunks=len(context_chunks),
             context_sources={
@@ -231,7 +342,9 @@ async def generate_query(
             policy=policy_info,
             context_used=len(context_chunks),
             generation_time_ms=generation_time_ms,
-            tokens_used=usage
+            tokens_used=usage,
+            model_used=model_used,
+            cost_usd=cost_usd,
         )
         
     except Exception as e:
@@ -311,4 +424,63 @@ async def validate_query(
     return ValidationResponse(
         validation=validation_info,
         policy=policy_info
-    ) 
+    )
+
+
+@router.post("/generate/debug", response_model=DebugRetrievalResponse)
+async def debug_retrieval(
+    request: GenerationRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_user),
+):
+    """
+    Inspect what the retriever would surface for a question, without
+    calling OpenAI for generation. Use this to diagnose whether the
+    right tables/examples/corrections are reaching the LLM.
+
+    Same request body as `/generate`. Returns the chunks (kind, score,
+    content, metadata), the exact assembled context string the LLM would
+    see, and a rough token estimate.
+    """
+    # Validate catalog exists/is active (same as /generate)
+    stmt = select(Catalog).where(Catalog.id == request.catalog_id)
+    result = await db.execute(stmt)
+    catalog = result.scalar_one_or_none()
+    if not catalog:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Catalog not found")
+    if not catalog.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Catalog is not active")
+
+    context_chunks = await retrieve_context(
+        db=db,
+        question=request.question,
+        catalog_id=request.catalog_id,
+        include_schemas=request.include.schemas if request.include else None,
+        include_tables=request.include.tables if request.include else None,
+    )
+
+    assembled = build_context_string(context_chunks)
+    truncated = truncate_context(assembled, max_tokens=6000)
+
+    by_kind: Dict[str, int] = {}
+    for c in context_chunks:
+        by_kind[c["kind"]] = by_kind.get(c["kind"], 0) + 1
+
+    return DebugRetrievalResponse(
+        catalog_id=request.catalog_id,
+        question=request.question,
+        chunks_total=len(context_chunks),
+        by_kind=by_kind,
+        chunks=[
+            DebugChunk(
+                kind=c["kind"],
+                score=c["score"],
+                content=c["content"],
+                metadata=c.get("metadata"),
+            )
+            for c in context_chunks
+        ],
+        assembled_context=truncated,
+        # Same heuristic as truncate_context (1 token ≈ 4 chars).
+        estimated_context_tokens=len(truncated) // 4,
+    )
