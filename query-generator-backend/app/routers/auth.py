@@ -6,7 +6,8 @@ from typing import List
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -20,6 +21,7 @@ from app.deps.auth import (
 )
 from app.deps.db import get_db
 from app.models.auth import User, UserRole
+from app.models.history import QueryHistory
 from app.schemas.auth import (
     LoginRequest,
     Token,
@@ -231,8 +233,50 @@ async def list_users(
     stmt = select(User).options(selectinload(User.roles)).order_by(User.created_at.desc())
     result = await db.execute(stmt)
     users = result.scalars().all()
-    
-    return users 
+
+    return users
+
+
+class UserCostRow(BaseModel):
+    """Per-user aggregate over dq_history.cost_usd."""
+    user_id: str
+    total_cost_usd: float
+    total_queries: int
+    total_tokens: int
+
+
+@router.get("/users/cost-summary", response_model=List[UserCostRow])
+async def users_cost_summary(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Total OpenAI spend per user, aggregated from dq_history.
+
+    Only generations with a recorded cost (post-Phase-1) contribute. Older
+    rows show $0 — that's accurate, not a bug, since we didn't have cost
+    tracking before. Admin-only.
+    """
+    stmt = (
+        select(
+            QueryHistory.user_id,
+            func.coalesce(func.sum(QueryHistory.cost_usd), 0.0).label("total_cost_usd"),
+            func.count(QueryHistory.id).label("total_queries"),
+            func.coalesce(func.sum(QueryHistory.total_tokens), 0).label("total_tokens"),
+        )
+        .group_by(QueryHistory.user_id)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    return [
+        UserCostRow(
+            user_id=str(r.user_id),
+            total_cost_usd=float(r.total_cost_usd or 0.0),
+            total_queries=int(r.total_queries or 0),
+            total_tokens=int(r.total_tokens or 0),
+        )
+        for r in rows
+    ]
 
 
 @router.put("/users/{user_id}", response_model=UserSchema)

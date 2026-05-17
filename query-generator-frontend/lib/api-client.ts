@@ -39,6 +39,15 @@ export interface UserProfile {
   last_login?: string
 }
 
+// Per-user aggregate over dq_history.cost_usd. Returned by
+// GET /auth/users/cost-summary.
+export interface UserCostRow {
+  user_id: string
+  total_cost_usd: number
+  total_queries: number
+  total_tokens: number
+}
+
 // Catalog Types
 export interface Catalog {
   id: string
@@ -735,6 +744,10 @@ LIMIT ${request.constraints?.max_rows || 100};`,
     }
 
     return this.request<UserProfile[]>('/auth/users')
+  }
+
+  async getUsersCostSummary(): Promise<UserCostRow[]> {
+    return this.request<UserCostRow[]>('/auth/users/cost-summary')
   }
 
   async createUser(userData: Partial<UserProfile> & { password: string }): Promise<UserProfile> {

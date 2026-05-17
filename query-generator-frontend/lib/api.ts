@@ -25,4 +25,5 @@ export type {
   GenModelInfo,
   EmbedModelInfo,
   ModelRegistryResponse,
+  UserCostRow,
 } from './api-client'
