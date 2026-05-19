@@ -106,14 +106,27 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string>("")
 
-  // Create dialog
+  // Create dialog. Role assignment is optional at create-time — pick "none"
+  // to make the bare account and assign roles later via the shield icon.
+  // 'general' is cross-Sector (no sector_id); the other three need one.
+  type CreateRole = "none" | "general" | "colonel" | "captain" | "soldier"
   const [createOpen, setCreateOpen] = useState(false)
-  const [createDraft, setCreateDraft] = useState({
+  const [createDraft, setCreateDraft] = useState<{
+    username: string
+    full_name: string
+    email: string
+    password: string
+    is_active: boolean
+    role: CreateRole
+    sector_id: string
+  }>({
     username: "",
     full_name: "",
     email: "",
     password: "",
     is_active: true,
+    role: "none",
+    sector_id: "",
   })
   const [createSaving, setCreateSaving] = useState(false)
 
@@ -227,9 +240,36 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
     setCreateSaving(true)
     setError("")
     try {
-      await api.createUser(createDraft)
+      // 1. Create the account itself.
+      const { role, sector_id, ...accountData } = createDraft
+      const newUser = await api.createUser(accountData)
+
+      // 2. Optional role assignment in the same submit. If anything below
+      //    fails we surface the partial-success state: the user exists, but
+      //    has no role yet — admin can finish via the shield icon.
+      try {
+        if (role === "general") {
+          await api.promoteToGeneral(newUser.id)
+        } else if (role !== "none" && sector_id) {
+          await api.assignUserRole(newUser.id, role, sector_id)
+        }
+      } catch (e: any) {
+        setError(
+          `User created, but role assignment failed: ${e?.message ?? "unknown error"}. ` +
+            `Use the shield icon to assign a role.`,
+        )
+      }
+
       setCreateOpen(false)
-      setCreateDraft({ username: "", full_name: "", email: "", password: "", is_active: true })
+      setCreateDraft({
+        username: "",
+        full_name: "",
+        email: "",
+        password: "",
+        is_active: true,
+        role: "none",
+        sector_id: "",
+      })
       await loadUsers()
     } catch (e: any) {
       setError(e?.message ?? "Failed to create user")
@@ -609,6 +649,74 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
                 onChange={(e) => setCreateDraft({ ...createDraft, password: e.target.value })}
               />
             </div>
+
+            {/* Optional initial role. Defaults to None — the General can
+                always assign roles later via the shield icon. */}
+            <div className="rounded border p-3 space-y-3 bg-muted/20">
+              <div>
+                <Label className="text-sm">Initial role (optional)</Label>
+                <p className="text-xs text-muted-foreground">
+                  Skip and assign later, or grant a role right now.
+                  &nbsp;<strong>General</strong> is cross-Sector;
+                  Colonel / Captain / Soldier need a target Sector.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label htmlFor="c-role" className="text-xs">Role</Label>
+                  <Select
+                    value={createDraft.role}
+                    onValueChange={(v) =>
+                      setCreateDraft({
+                        ...createDraft,
+                        role: v as CreateRole,
+                        // Clear sector when switching to a role that doesn't need one.
+                        sector_id: v === "general" || v === "none" ? "" : createDraft.sector_id,
+                      })
+                    }
+                  >
+                    <SelectTrigger id="c-role">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">None</SelectItem>
+                      <SelectItem value="general">General · cross-Sector</SelectItem>
+                      <SelectItem value="colonel">Colonel · sector admin</SelectItem>
+                      <SelectItem value="captain">Captain · knowledge author</SelectItem>
+                      <SelectItem value="soldier">Soldier · generate-only</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {(createDraft.role === "colonel" ||
+                  createDraft.role === "captain" ||
+                  createDraft.role === "soldier") && (
+                  <div className="space-y-1">
+                    <Label htmlFor="c-sector" className="text-xs">Sector</Label>
+                    <Select
+                      value={createDraft.sector_id || undefined}
+                      onValueChange={(v) =>
+                        setCreateDraft({ ...createDraft, sector_id: v })
+                      }
+                    >
+                      <SelectTrigger id="c-sector">
+                        <SelectValue placeholder="Pick a Sector" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {sectors
+                          .filter((s) => s.is_active)
+                          .map((s) => (
+                            <SelectItem key={s.id} value={s.id}>
+                              {s.name}{" "}
+                              <span className="text-muted-foreground text-xs">({s.code})</span>
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="flex items-center justify-between rounded border p-3">
               <div>
                 <Label htmlFor="c-active">Active</Label>
@@ -631,7 +739,12 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
                 createSaving ||
                 !createDraft.username ||
                 !createDraft.email ||
-                !createDraft.password
+                !createDraft.password ||
+                // A sector-scoped role requires a Sector pick.
+                ((createDraft.role === "colonel" ||
+                  createDraft.role === "captain" ||
+                  createDraft.role === "soldier") &&
+                  !createDraft.sector_id)
               }
             >
               {createSaving && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
