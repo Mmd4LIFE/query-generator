@@ -112,6 +112,91 @@ Phases are ordered by dependency. Do not start phase N+1 until phase N has shipp
 - `app/routers/catalogs.py`, `app/routers/policies.py`, `app/routers/knowledge.py` — auth imports patched (`require_admin → require_general`, `require_data_guy → require_captain_anywhere`, `get_user_active_role → is_general`) so `main.py` boots cleanly. Endpoint scoping itself is Phase 2.
 - `app/core/settings_registry.py` — new `retrieval.mmr_lambda` setting registered.
 
+### Done — continuation (Phase 2 finish: history, policies, knowledge)
+
+- `app/routers/history.py` — **full rewrite**, mounted at
+  `/v1/sectors/{sector_id}/history`:
+  - Visibility rule: Soldier / Captain see own rows only; Colonel /
+    General see whole-Sector. Controlled by `scope=auto|own|sector`
+    query param (auto is the role default).
+  - `_fetch_history_for_caller(..., own_only=...)` factored so feedback
+    writes can demand ownership regardless of tier.
+  - `QueryFeedback` now stamps `sector_id` (was a latent NOT-NULL
+    runtime bug).
+  - Auto-reindex shortcut removed: `suggested_sql` files a pending
+    `Correction` via `routers/corrections.file_pending_correction`,
+    Colonel approval is the only path to embedding.
+  - `correction_status` (pending / approved / rejected) surfaced in the
+    feedback response so the UI can show review state.
+  - `feedback/all` is now Colonel+ only (audit view); Soldier/Captain
+    keep `GET /feedback` for own-row only.
+
+- `app/routers/policies.py` — **full rewrite**, mounted at
+  `/v1/sectors/{sector_id}/catalogs/{catalog_id}/policy`:
+  - Soldier+ reads, Colonel+ writes (was admin-only / data_guy-only mix).
+  - Catalog membership verified via `_assert_catalog_in_sector` — cross-
+    sector policy reads return 404 instead of leaking existence.
+  - Active-row queries always filter by `sector_id` AND `deleted_at IS
+    NULL`. New rows stamped with `sector_id`.
+  - Soft-delete versioning preserved; the new partial unique index
+    `(catalog_id) WHERE deleted_at IS NULL` (Phase 1 migration) keeps
+    exactly one active row per catalog.
+  - Full before/after diff written to `dq_audit_log` on every update.
+
+- `app/routers/knowledge.py` — **full rewrite**, mounted at
+  `/v1/sectors/{sector_id}/knowledge/{notes|metrics|examples}`:
+  - Tier matrix: Soldier+ reads, Captain+ creates pending rows,
+    Colonel+ approves / rejects.
+  - **Integrity rule enforced**: `approved_by != created_by` rejects
+    even General self-approval (matches `routers/corrections.py`).
+  - Approval embeds the single row via `embed_one_knowledge_row` — no
+    more whole-catalog reindex per edit. Rejection of a previously-
+    approved row drops its embedding via `delete_embeddings_for_row`.
+  - `_check_catalog_in_sector` rejects cross-sector `catalog_id`
+    references at the API edge so a Captain in Sector A cannot file a
+    note "in Sector B" by guessing the catalog UUID.
+  - Audit rows emitted on create / approve / reject for all three
+    sub-resources.
+  - `list_*` endpoints now include explicit `limit` / `offset`
+    validation (max 200/page) instead of unbounded scans.
+
+- `app/main.py` — all five routers (`catalogs`, `knowledge`, `policies`,
+  `history`, `corrections`) now mounted under
+  `/v1/sectors/{sector_id}/...`. The only remaining legacy mounts are
+  `/auth/*` (cross-sector by design), `/v1/settings/*` (global only —
+  Sector overrides path is Phase 8 TODO), and `/v1/generate` /
+  `/v1/validate` (kept stable for the frontend until Phase 7).
+
+### Done — continuation (Phase 2 step: catalogs sector-scoped + generate IDOR closed)
+
+- `app/routers/catalogs.py` — **full rewrite**, mounted at
+  `/v1/sectors/{sector_id}/catalogs`:
+  - Every endpoint uses `current_sector` (membership check) plus a tier gate:
+    `require_sector_soldier` for reads, `require_sector_captain` for create
+    / update / reindex.
+  - All queries filter `Catalog.sector_id == sector.id`. Outsiders get 404,
+    not 403, to avoid existence leakage.
+  - Catalog-name uniqueness is now **per-Sector** (two Sectors can each have
+    a `production_db`).
+  - `flatten_catalog_json` now stamps `sector_id` on every CatalogObject
+    (required by the NOT-NULL column).
+  - Default `Policy` row also gets `sector_id`.
+  - `list_catalogs` no longer does N+1 object-count queries — collapsed
+    into one grouped `SELECT … GROUP BY catalog_id, object_type`.
+  - Audit rows emitted on create / update / reindex.
+
+- `app/routers/generate.py` — IDOR closed without moving the URL (frontend
+  refactor is Phase 7):
+  - New `_load_catalog_for_user(db, catalog_id, user)` helper checks the
+    caller has Soldier+ in the catalog's Sector and 404s outsiders. Used
+    by both `/generate` and `/generate/debug`.
+  - All three `QueryHistory(...)` constructions now stamp `sector_id`
+    (required by the migrated NOT-NULL column — was a latent runtime bug).
+  - Uses `is_general` + `effective_role` from deps/auth for the
+    membership check.
+
+- `app/main.py` — catalogs mount moved to `/v1/sectors/{sector_id}/catalogs`.
+
 ### Done — continuation (Phase 5 + embeddings.py rewrite)
 
 - `app/core/embeddings.py` — **full rewrite** for the new schema:
@@ -170,11 +255,21 @@ Phases are ordered by dependency. Do not start phase N+1 until phase N has shipp
 
 ### Still not done
 
-**Phase 2 (access control everywhere)** — not started
+**Phase 2 (access control everywhere)** — **mostly complete**
 
-- Refactor every router (`catalogs`, `generate`, `history`, `knowledge`, `policies`, `settings`) onto `/v1/sectors/{sector_id}/...` and use `current_sector` + the right `require_in_sector(...)`.
-- Knowledge approval rule: `approved_by <> created_by` (Generals NOT exempt).
-- Settings: split read/write between global and sector scope.
+- ✅ `catalogs` — sector-scoped, audit-logged, per-Sector name uniqueness.
+- ✅ `generate` — IDOR closed via `_load_catalog_for_user`; `sector_id`
+  stamped on every history row. URL move under `/v1/sectors/{sid}/`
+  bundled with Phase 7 frontend rewrite.
+- ✅ `history` — visibility rule (own vs Sector-wide for Colonel+),
+  `sector_id` stamped on feedback, correction-status surfaced.
+- ✅ `policies` — Soldier+ read, Colonel+ write; sector-scoped under
+  `/v1/sectors/{sid}/catalogs/{cid}/policy` with full audit diffs.
+- ✅ `knowledge` — Captain+ create, Colonel+ approve, **`approved_by !=
+  created_by` enforced for all kinds**, per-row embed/delete, audit.
+- 🔲 `settings` — global-only path still correct for Phase 1. Sector-
+  overrides path `GET/PUT /v1/sectors/{sid}/settings/{key}` remains
+  pending (Phase 8).
 
 **Phase 4 (RAG)** — not started
 

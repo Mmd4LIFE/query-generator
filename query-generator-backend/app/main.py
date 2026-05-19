@@ -167,11 +167,27 @@ app.include_router(
     prefix="/v1/sectors/{sector_id}/corrections",
     tags=["corrections"],
 )
-app.include_router(catalogs.router, prefix="/v1/catalogs", tags=["catalogs"])
-app.include_router(knowledge.router, prefix="/v1", tags=["knowledge"])
-app.include_router(policies.router, prefix="/v1/policies", tags=["policies"])
+app.include_router(
+    catalogs.router,
+    prefix="/v1/sectors/{sector_id}/catalogs",
+    tags=["catalogs"],
+)
+app.include_router(
+    knowledge.router,
+    prefix="/v1/sectors/{sector_id}/knowledge",
+    tags=["knowledge"],
+)
+app.include_router(
+    policies.router,
+    prefix="/v1/sectors/{sector_id}/catalogs/{catalog_id}/policy",
+    tags=["policies"],
+)
 app.include_router(generate.router, prefix="/v1", tags=["generation"])
-app.include_router(history.router, prefix="/v1/history", tags=["history"])
+app.include_router(
+    history.router,
+    prefix="/v1/sectors/{sector_id}/history",
+    tags=["history"],
+)
 app.include_router(settings_router.router, prefix="/v1/settings", tags=["settings"])
 
 
