@@ -1,8 +1,17 @@
 """
-Authentication router
+Authentication & user-account router.
+
+Scope split with `routers/sectors.py`:
+  - **This router**  owns the User account itself: create, edit, deactivate,
+    password reset, plus assigning/revoking the cross-sector `general` role.
+  - **Sectors router** owns role membership *inside* a sector
+    (`POST /v1/sectors/{sid}/members`, etc.).
+
+All account-mutation endpoints require General. Cost summaries are also
+General-only (cross-tenant visibility).
 """
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional, Tuple
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,24 +20,27 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.audit import write_audit
 from app.deps.auth import (
+    active_role_rows,
     authenticate_user,
     create_access_token,
     get_current_active_user,
     get_password_hash,
-    get_user_roles,
-    require_admin,
+    is_general,
+    require_general,
 )
 from app.deps.db import get_db
 from app.models.auth import User, UserRole
 from app.models.history import QueryHistory
+from app.models.sector import Sector
 from app.schemas.auth import (
     LoginRequest,
+    SectorMembership,
     Token,
     User as UserSchema,
     UserCreate,
     UserProfile,
-    UserRoleCreate,
     UserUpdate,
     UserStatusUpdate,
     UserRole as UserRoleSchema,
@@ -38,207 +50,464 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+async def _build_memberships(
+    db: AsyncSession, user: User
+) -> Tuple[bool, List[SectorMembership]]:
+    """Return (is_general, [SectorMembership]) — used for /login and /me.
+
+    A General is just a user with a role row where `role_name='general'`
+    AND `sector_id IS NULL`. They also get to see *all* sectors in the UI,
+    but we don't bake that list into the JWT — frontend pulls it from
+    `GET /v1/sectors` instead.
+    """
+    active = active_role_rows(user)
+    is_g = any(r.role_name == "general" for r in active)
+    sector_ids = [r.sector_id for r in active if r.sector_id is not None]
+    if not sector_ids:
+        return is_g, []
+    rows = (
+        await db.execute(
+            select(Sector).where(
+                Sector.id.in_(sector_ids), Sector.deleted_at.is_(None)
+            )
+        )
+    ).scalars().all()
+    by_id = {s.id: s for s in rows}
+    out: List[SectorMembership] = []
+    for r in active:
+        if r.sector_id is None:
+            continue
+        s = by_id.get(r.sector_id)
+        if not s or not s.is_active:
+            continue
+        out.append(
+            SectorMembership(
+                sector_id=s.id,
+                sector_code=s.code,
+                sector_name=s.name,
+                role=r.role_name,
+            )
+        )
+    return is_g, out
+
+
+# -----------------------------------------------------------------------------
+# Login & profile
+# -----------------------------------------------------------------------------
 @router.post("/login", response_model=Token)
-async def login(
-    login_request: LoginRequest,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Authenticate user and return access token
-    """
-    user = await authenticate_user(db, login_request.username, login_request.password)
+async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+    user = await authenticate_user(db, req.username, req.password)
     if not user:
-        logger.warning("Failed login attempt", username=login_request.username)
+        logger.warning("login.failed", username=req.username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    # Update last login
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="User is deactivated")
+
+    # We loaded the user via `authenticate_user` without joining roles —
+    # re-fetch with roles eagerly loaded so `_build_memberships` doesn't lazy-load.
+    user = (
+        await db.execute(
+            select(User).options(selectinload(User.roles)).where(User.id == user.id)
+        )
+    ).scalar_one()
+
     user.last_login = datetime.utcnow()
     await db.commit()
-    
-    # Create access token
-    access_token_expires = timedelta(minutes=1440)  # 24 hours
-    access_token = create_access_token(
-        data={"sub": str(user.id)}, expires_delta=access_token_expires
+
+    is_g, memberships = await _build_memberships(db, user)
+    token = create_access_token(
+        data={"sub": str(user.id)},
+        expires_delta=timedelta(minutes=1440),
     )
-    
-    logger.info("User logged in successfully", user_id=user.id, username=user.username)
-    
-    return {"access_token": access_token, "token_type": "bearer"}
+    logger.info("login.ok", user_id=str(user.id), is_general=is_g)
+    return Token(
+        access_token=token,
+        token_type="bearer",
+        is_general=is_g,
+        sectors=memberships,
+    )
 
 
 @router.get("/me", response_model=UserProfile)
-async def get_current_user_profile(
-    current_user: User = Depends(get_current_active_user)
+async def me(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
-    """
-    Get current user profile with single active role
-    """
-    from app.deps.auth import get_user_active_role
-    
-    # Get single active role instead of all roles
-    active_role = get_user_active_role(current_user)
-    
+    is_g, memberships = await _build_memberships(db, current_user)
     return UserProfile(
         id=current_user.id,
         username=current_user.username,
         email=current_user.email,
         full_name=current_user.full_name,
         is_active=current_user.is_active,
-        roles=[active_role],  # Single role in array for compatibility
+        is_general=is_g,
+        sectors=memberships,
         created_at=current_user.created_at,
         last_login=current_user.last_login,
     )
 
 
-@router.post("/users", response_model=UserSchema)
+# -----------------------------------------------------------------------------
+# Account CRUD (General only)
+# -----------------------------------------------------------------------------
+@router.post("/users", response_model=UserSchema, status_code=201)
 async def create_user(
-    user_create: UserCreate,
+    payload: UserCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
+    current_user: User = Depends(require_general),
 ):
+    """Create a new user account. No roles are assigned here — use
+    `/v1/sectors/{sid}/members` for sector roles, or `POST
+    /auth/users/{id}/promote-to-general` to make them a General.
     """
-    Create a new user (admin only)
-    """
-    # Check if username already exists
-    stmt = select(User).where(User.username == user_create.username)
-    result = await db.execute(stmt)
-    if result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already registered"
+    dup = (
+        await db.execute(
+            select(User).where(
+                (User.username == payload.username) | (User.email == payload.email)
+            )
         )
-    
-    # Check if email already exists
-    stmt = select(User).where(User.email == user_create.email)
-    result = await db.execute(stmt)
-    if result.scalar_one_or_none():
+    ).scalar_one_or_none()
+    if dup:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            status_code=400, detail="Username or email already registered"
         )
-    
-    # Create new user
-    hashed_password = get_password_hash(user_create.password)
-    db_user = User(
-        username=user_create.username,
-        email=user_create.email,
-        hashed_password=hashed_password,
-        full_name=user_create.full_name,
-        is_active=user_create.is_active,
-    )
-    
-    db.add(db_user)
-    await db.commit()
-    await db.refresh(db_user)
-    
-    # Reload with roles relationship
-    stmt = select(User).options(selectinload(User.roles)).where(User.id == db_user.id)
-    result = await db.execute(stmt)
-    db_user = result.scalar_one()
-    
-    logger.info(
-        "User created",
-        user_id=db_user.id,
-        username=db_user.username,
-        created_by=current_user.id
-    )
-    
-    return db_user
 
-
-@router.post("/users/{user_id}/roles", response_model=dict)
-async def assign_user_role(
-    user_id: str,
-    role_create: UserRoleCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
-):
-    """
-    Assign role to user (admin only) - Single Role System
-    This will soft-delete any existing active roles and assign the new one
-    """
-    # Validate role
-    valid_roles = ["admin", "data_guy", "user"]
-    if role_create.role_name not in valid_roles:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid role. Must be one of: {valid_roles}"
-        )
-    
-    # Check if user exists
-    stmt = select(User).where(User.id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Single Role System: Soft delete all existing active roles
-    from datetime import datetime
-    stmt = select(UserRole).where(
-        UserRole.user_id == user_id,
-        UserRole.deleted_at.is_(None)
+    user = User(
+        username=payload.username,
+        email=payload.email,
+        hashed_password=get_password_hash(payload.password),
+        full_name=payload.full_name,
+        is_active=payload.is_active,
     )
-    result = await db.execute(stmt)
-    existing_roles = result.scalars().all()
-    
-    for existing_role in existing_roles:
-        existing_role.deleted_at = datetime.utcnow()
-        existing_role.updated_at = datetime.utcnow()
-    
-    # Check if this exact role is already the active role
-    current_active_role = None
-    if existing_roles:
-        # Get the role that was just soft-deleted
-        for role in existing_roles:
-            if role.role_name == role_create.role_name and role.deleted_at:
-                current_active_role = role.role_name
-                break
-    
-    # Create new role assignment
-    db_role = UserRole(
-        user_id=user_id,
-        role_name=role_create.role_name
-    )
-    
-    db.add(db_role)
+    db.add(user)
     await db.commit()
-    
-    logger.info(
-        "Role assigned (single role system)",
-        user_id=user_id,
-        new_role=role_create.role_name,
-        previous_roles=[role.role_name for role in existing_roles],
-        assigned_by=current_user.id
+    await db.refresh(user)
+
+    await write_audit(
+        db,
+        actor_id=current_user.id,
+        action="user.create",
+        target_type="user",
+        target_id=user.id,
+        diff={"after": {"username": user.username, "email": user.email}},
     )
-    
-    return {"message": f"Role '{role_create.role_name}' assigned successfully"}
+    await db.commit()
+
+    # Reload with empty roles relationship so the schema serializer is happy.
+    user = (
+        await db.execute(
+            select(User).options(selectinload(User.roles)).where(User.id == user.id)
+        )
+    ).scalar_one()
+    return user
 
 
 @router.get("/users", response_model=List[UserSchema])
 async def list_users(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
+    current_user: User = Depends(require_general),
 ):
+    stmt = (
+        select(User)
+        .options(selectinload(User.roles))
+        .order_by(User.created_at.desc())
+    )
+    return (await db.execute(stmt)).scalars().all()
+
+
+@router.put("/users/{user_id}", response_model=UserSchema)
+async def update_user(
+    user_id: str,
+    payload: UserUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_general),
+):
+    user = (
+        await db.execute(
+            select(User).options(selectinload(User.roles)).where(User.id == user_id)
+        )
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    before = {"email": user.email, "full_name": user.full_name, "is_active": user.is_active}
+
+    if payload.email and payload.email != user.email:
+        dup = (
+            await db.execute(select(User).where(User.email == payload.email))
+        ).scalar_one_or_none()
+        if dup:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        user.email = payload.email
+    if payload.full_name is not None:
+        user.full_name = payload.full_name
+    if payload.is_active is not None:
+        user.is_active = payload.is_active
+    if payload.password is not None:
+        user.hashed_password = get_password_hash(payload.password)
+
+    user.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(user)
+
+    await write_audit(
+        db,
+        actor_id=current_user.id,
+        action="user.update",
+        target_type="user",
+        target_id=user.id,
+        diff={
+            "before": before,
+            "after": {
+                "email": user.email,
+                "full_name": user.full_name,
+                "is_active": user.is_active,
+            },
+        },
+    )
+    await db.commit()
+    return user
+
+
+@router.patch("/users/{user_id}/status")
+async def set_user_status(
+    user_id: str,
+    payload: UserStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_general),
+):
+    user = (
+        await db.execute(select(User).where(User.id == user_id))
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.id == current_user.id and payload.is_active is False:
+        raise HTTPException(
+            status_code=400, detail="Cannot deactivate your own account"
+        )
+    before = user.is_active
+    user.is_active = payload.is_active
+    user.updated_at = datetime.utcnow()
+    await db.commit()
+    await write_audit(
+        db,
+        actor_id=current_user.id,
+        action="user.status",
+        target_type="user",
+        target_id=user.id,
+        diff={"before": before, "after": payload.is_active},
+    )
+    await db.commit()
+    return {"user_id": user_id, "is_active": payload.is_active}
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_general),
+):
+    """Hard-delete a user. Foreign keys on `dq_history`, `dq_feedback`, audit
+    rows, etc. are RESTRICTed — they prevent accidental deletion of users
+    who left a trail. Soft-deactivation via PATCH /status is the usual path.
     """
-    List all users with active roles only (admin only)
-    """
-    # Load users with roles (active roles will be filtered in the response)
-    stmt = select(User).options(selectinload(User.roles)).order_by(User.created_at.desc())
-    result = await db.execute(stmt)
-    users = result.scalars().all()
+    user = (
+        await db.execute(select(User).where(User.id == user_id))
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
 
-    return users
+    username = user.username
+    await db.delete(user)
+    await db.commit()
+    await write_audit(
+        db,
+        actor_id=current_user.id,
+        action="user.delete",
+        target_type="user",
+        target_id=user.id,
+        diff={"username": username},
+    )
+    await db.commit()
+    return {"deleted_user_id": user_id, "username": username}
 
 
+# -----------------------------------------------------------------------------
+# General-role assignment (cross-sector — separate from sector membership)
+# -----------------------------------------------------------------------------
+@router.post("/users/{user_id}/promote-to-general", response_model=UserRoleSchema)
+async def promote_to_general(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_general),
+):
+    """Grant the `general` role (cross-sector). Idempotent."""
+    user = (
+        await db.execute(
+            select(User).options(selectinload(User.roles)).where(User.id == user_id)
+        )
+    ).scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    existing = next(
+        (
+            r
+            for r in user.roles
+            if r.role_name == "general" and r.deleted_at is None
+        ),
+        None,
+    )
+    if existing:
+        return existing
+
+    role = UserRole(user_id=user.id, sector_id=None, role_name="general")
+    db.add(role)
+    await db.commit()
+    await db.refresh(role)
+    await write_audit(
+        db,
+        actor_id=current_user.id,
+        action="user.promote_general",
+        target_type="user",
+        target_id=user.id,
+    )
+    await db.commit()
+    return role
+
+
+@router.delete("/users/{user_id}/general", status_code=204)
+async def revoke_general(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_general),
+):
+    """Revoke the `general` role. A General cannot revoke their own General role
+    (would lock out the last admin)."""
+    if str(current_user.id) == str(user_id):
+        raise HTTPException(
+            status_code=400, detail="Generals cannot revoke their own General role"
+        )
+
+    role = (
+        await db.execute(
+            select(UserRole).where(
+                UserRole.user_id == user_id,
+                UserRole.role_name == "general",
+                UserRole.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if not role:
+        raise HTTPException(status_code=404, detail="User is not a General")
+    role.deleted_at = datetime.utcnow()
+    await db.commit()
+    await write_audit(
+        db,
+        actor_id=current_user.id,
+        action="user.revoke_general",
+        target_type="user",
+        target_id=role.user_id,
+    )
+    await db.commit()
+    return None
+
+
+# -----------------------------------------------------------------------------
+# Read-only listings
+# -----------------------------------------------------------------------------
+@router.get("/users/{user_id}/roles", response_model=List[UserRoleSchema])
+async def get_user_roles_endpoint(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_general),
+):
+    """Return every active role row for a user (all sectors + general)."""
+    user = (
+        await db.execute(
+            select(User).options(selectinload(User.roles)).where(User.id == user_id)
+        )
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return [r for r in user.roles if r.deleted_at is None]
+
+
+@router.get("/users/{user_id}/role-history")
+async def get_user_role_history(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_general),
+):
+    """Full history of role assignments — active and revoked — for one user."""
+    user = (
+        await db.execute(select(User).where(User.id == user_id))
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    rows = (
+        await db.execute(
+            select(UserRole)
+            .where(UserRole.user_id == user_id)
+            .order_by(UserRole.created_at.desc())
+        )
+    ).scalars().all()
+    return [
+        {
+            "role_name": r.role_name,
+            "sector_id": str(r.sector_id) if r.sector_id else None,
+            "assigned_at": r.created_at,
+            "removed_at": r.deleted_at,
+            "status": "active" if r.deleted_at is None else "inactive",
+        }
+        for r in rows
+    ]
+
+
+@router.get("/roles")
+async def list_available_roles(current_user: User = Depends(get_current_active_user)):
+    """Static role catalog — used by frontend dropdowns."""
+    return [
+        {
+            "name": "general",
+            "label": "General",
+            "description": "Root admin. Sees every Sector. Sector_id MUST be null.",
+            "is_sector_scoped": False,
+        },
+        {
+            "name": "colonel",
+            "label": "Colonel",
+            "description": "Sector admin. Full control inside one Sector.",
+            "is_sector_scoped": True,
+        },
+        {
+            "name": "captain",
+            "label": "Captain",
+            "description": "Data engineer / knowledge author inside a Sector.",
+            "is_sector_scoped": True,
+        },
+        {
+            "name": "soldier",
+            "label": "Soldier",
+            "description": "End user inside a Sector. Generates queries only.",
+            "is_sector_scoped": True,
+        },
+    ]
+
+
+# -----------------------------------------------------------------------------
+# Cost summary (cross-tenant — General only)
+# -----------------------------------------------------------------------------
 class UserCostRow(BaseModel):
-    """Per-user aggregate over dq_history.cost_usd."""
     user_id: str
     total_cost_usd: float
     total_queries: int
@@ -248,14 +517,10 @@ class UserCostRow(BaseModel):
 @router.get("/users/cost-summary", response_model=List[UserCostRow])
 async def users_cost_summary(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_general),
 ):
-    """Total OpenAI spend per user, aggregated from dq_history.
-
-    Only generations with a recorded cost (post-Phase-1) contribute. Older
-    rows show $0 — that's accurate, not a bug, since we didn't have cost
-    tracking before. Admin-only.
-    """
+    """Per-user spend across *all* sectors. Sector-scoped variants live under
+    `/v1/sectors/{sid}/cost-summary` (Phase 6)."""
     stmt = (
         select(
             QueryHistory.user_id,
@@ -265,9 +530,7 @@ async def users_cost_summary(
         )
         .group_by(QueryHistory.user_id)
     )
-    result = await db.execute(stmt)
-    rows = result.all()
-
+    rows = (await db.execute(stmt)).all()
     return [
         UserCostRow(
             user_id=str(r.user_id),
@@ -277,286 +540,3 @@ async def users_cost_summary(
         )
         for r in rows
     ]
-
-
-@router.put("/users/{user_id}", response_model=UserSchema)
-async def update_user(
-    user_id: str,
-    user_update: UserUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
-):
-    """
-    Update user information (admin only)
-    """
-    # Check if user exists
-    stmt = select(User).options(selectinload(User.roles)).where(User.id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Check for duplicate email if email is being updated
-    if user_update.email and user_update.email != user.email:
-        stmt = select(User).where(User.email == user_update.email)
-        result = await db.execute(stmt)
-        if result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-    
-    # Update fields
-    if user_update.email is not None:
-        user.email = user_update.email
-    if user_update.full_name is not None:
-        user.full_name = user_update.full_name
-    if user_update.is_active is not None:
-        user.is_active = user_update.is_active
-    if user_update.password is not None:
-        user.hashed_password = get_password_hash(user_update.password)
-    
-    user.updated_at = datetime.utcnow()
-    
-    await db.commit()
-    await db.refresh(user)
-    
-    logger.info(
-        "User updated",
-        user_id=user.id,
-        username=user.username,
-        updated_by=current_user.id
-    )
-    
-    return user
-
-
-@router.delete("/users/{user_id}")
-async def delete_user(
-    user_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
-):
-    """
-    Delete user (admin only)
-    """
-    # Check if user exists
-    stmt = select(User).where(User.id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Prevent admin from deleting themselves
-    if user.id == current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete your own account"
-        )
-    
-    username = user.username
-    await db.delete(user)
-    await db.commit()
-    
-    logger.info(
-        "User deleted",
-        user_id=user_id,
-        username=username,
-        deleted_by=current_user.id
-    )
-    
-    return {
-        "message": "User deleted successfully",
-        "deleted_user_id": user_id
-    }
-
-
-@router.patch("/users/{user_id}/status")
-async def toggle_user_status(
-    user_id: str,
-    status_update: UserStatusUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
-):
-    """
-    Toggle user active status (admin only)
-    """
-    # Check if user exists
-    stmt = select(User).where(User.id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Prevent admin from deactivating themselves
-    if user.id == current_user.id and status_update.is_active == False:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot deactivate your own account"
-        )
-    
-    user.is_active = status_update.is_active
-    user.updated_at = datetime.utcnow()
-    
-    await db.commit()
-    
-    logger.info(
-        "User status updated",
-        user_id=user_id,
-        username=user.username,
-        is_active=status_update.is_active,
-        updated_by=current_user.id
-    )
-    
-    return {
-        "message": "User status updated successfully",
-        "user_id": user_id,
-        "is_active": status_update.is_active
-    }
-
-
-@router.get("/users/{user_id}/roles", response_model=List[UserRoleSchema])
-async def get_user_roles_endpoint(
-    user_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
-):
-    """
-    Get user active roles (admin only) - Single Role System
-    """
-    # Check if user exists and get roles (active roles filtered in response)
-    stmt = select(User).options(selectinload(User.roles)).where(User.id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    return user.roles
-
-
-@router.delete("/users/{user_id}/roles/{role_id}")
-async def remove_user_role(
-    user_id: str,
-    role_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
-):
-    """
-    Remove role from user (admin only)
-    """
-    # Check if user exists
-    stmt = select(User).where(User.id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Check if role assignment exists
-    stmt = select(UserRole).where(
-        UserRole.id == role_id,
-        UserRole.user_id == user_id
-    )
-    result = await db.execute(stmt)
-    role_assignment = result.scalar_one_or_none()
-    if not role_assignment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Role assignment not found"
-        )
-    
-    role_name = role_assignment.role_name
-    await db.delete(role_assignment)
-    await db.commit()
-    
-    logger.info(
-        "Role removed",
-        user_id=user_id,
-        role_name=role_name,
-        removed_by=current_user.id
-    )
-    
-    return {
-        "message": "Role removed successfully",
-        "user_id": user_id,
-        "role_name": role_name
-    }
-
-
-@router.get("/roles")
-async def list_available_roles(
-    current_user: User = Depends(require_admin)
-):
-    """
-    List all available roles (admin only)
-    """
-    return [
-        {
-            "id": "role-1",
-            "name": "admin",
-            "description": "Full system access",
-            "permissions": ["*"]
-        },
-        {
-            "id": "role-2", 
-            "name": "data_guy",
-            "description": "Can manage catalogs and generate queries",
-            "permissions": ["catalog:read", "catalog:write", "query:generate"]
-        },
-        {
-            "id": "role-3",
-            "name": "user", 
-            "description": "Can generate queries only",
-            "permissions": ["query:generate"]
-        }
-    ] 
-
-
-@router.get("/users/{user_id}/role-history")
-async def get_user_role_history(
-    user_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
-):
-    """
-    Get user role history (admin only)
-    """
-    # Check if user exists
-    stmt = select(User).where(User.id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Get all role assignments (active and deleted) for this user
-    stmt = select(UserRole).where(UserRole.user_id == user_id).order_by(UserRole.created_at.desc())
-    result = await db.execute(stmt)
-    role_assignments = result.scalars().all()
-    
-    history = []
-    for assignment in role_assignments:
-        history.append({
-            "role_name": assignment.role_name,
-            "assigned_at": assignment.created_at,
-            "removed_at": assignment.deleted_at,
-            "status": "active" if assignment.deleted_at is None else "inactive"
-        })
-    
-    return history 

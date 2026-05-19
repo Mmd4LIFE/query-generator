@@ -12,7 +12,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.embeddings import create_embeddings_for_catalog
-from app.deps.auth import require_admin, require_data_guy, require_user, User
+from app.deps.auth import (
+    require_captain_anywhere,
+    require_general,
+    require_user,
+    User,
+)
+
+# Phase-1 compatibility aliases. Phase 2 moves these routes under
+# /v1/sectors/{sid}/catalogs and uses sector-scoped dependencies; until
+# then the tier-based gates preserve the old behavior.
+require_admin = require_general
+require_data_guy = require_captain_anywhere
 from app.deps.db import get_db
 from app.models.catalog import Catalog, CatalogObject
 from app.models.policies import Policy

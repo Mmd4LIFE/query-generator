@@ -16,7 +16,16 @@ from pydantic import BaseModel
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps.auth import require_admin, require_data_guy, require_user, User
+from app.deps.auth import (
+    require_captain_anywhere,
+    require_general,
+    require_user,
+    User,
+)
+
+# Phase-1 compatibility aliases; replaced by /v1/sectors/{sid}/policies in Phase 2.
+require_admin = require_general
+require_data_guy = require_captain_anywhere
 from app.deps.db import get_db
 from app.models.policies import Policy
 

@@ -140,13 +140,16 @@ async def generate_query(
     policy = await get_catalog_policy(db, request.catalog_id)
     
     try:
-        # Retrieve context
+        # Retrieve context. We derive sector_id from the catalog row so this
+        # legacy endpoint keeps working until Phase 2 moves it under
+        # /v1/sectors/{sid}/generate and enforces membership properly.
         context_chunks = await retrieve_context(
             db=db,
             question=request.question,
+            sector_id=catalog.sector_id,
             catalog_id=request.catalog_id,
             include_schemas=request.include.schemas if request.include else None,
-            include_tables=request.include.tables if request.include else None
+            include_tables=request.include.tables if request.include else None,
         )
         
         # Build context string. Token budget comes from settings — defaults
@@ -454,6 +457,7 @@ async def debug_retrieval(
     context_chunks = await retrieve_context(
         db=db,
         question=request.question,
+        sector_id=catalog.sector_id,
         catalog_id=request.catalog_id,
         include_schemas=request.include.schemas if request.include else None,
         include_tables=request.include.tables if request.include else None,

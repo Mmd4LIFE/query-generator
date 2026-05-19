@@ -12,9 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
+from app.core.qdrant_client import qdrant_store
 from app.core.settings_service import seed_defaults as seed_settings_defaults
 from app.deps.db import create_db_and_tables
-from app.routers import auth, catalogs, generate, history, knowledge, policies
+from app.routers import auth, catalogs, generate, history, knowledge, policies, sectors
 from app.routers import settings as settings_router
 
 
@@ -48,6 +49,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize database
     await create_db_and_tables()
     logger.info("Database initialized")
+
+    # Ensure Qdrant collection + payload indexes exist (idempotent).
+    try:
+        qdrant_store.ensure_collection()
+    except Exception as e:
+        logger.error("Failed to ensure Qdrant collection", error=str(e))
 
     # Seed default settings so the Settings UI has rows on fresh installs.
     try:
@@ -145,6 +152,7 @@ async def health_check():
 
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["authentication"])
+app.include_router(sectors.router, prefix="/v1/sectors", tags=["sectors"])
 app.include_router(catalogs.router, prefix="/v1/catalogs", tags=["catalogs"])
 app.include_router(knowledge.router, prefix="/v1", tags=["knowledge"])
 app.include_router(policies.router, prefix="/v1/policies", tags=["policies"])

@@ -11,12 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.embeddings import create_embeddings_for_catalog
 from app.deps.auth import (
-    get_user_active_role,
-    require_admin,
-    require_data_guy,
+    is_general,
+    require_captain_anywhere,
+    require_general,
     require_user,
     User,
 )
+
+# Phase-1 compatibility aliases; replaced by sector-scoped deps in Phase 2.
+require_admin = require_general
+require_data_guy = require_captain_anywhere
 from app.deps.db import get_db
 from app.models.knowledge import Example, Metric, Note
 from app.schemas.knowledge import (
@@ -36,13 +40,12 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
-_TRUSTED_APPROVER_ROLES = {"admin", "super_admin"}
-
-
 def _is_trusted_approver(user: User) -> bool:
-    """Admins (and super_admins) skip the approval queue — their knowledge is
-    auto-approved and immediately embedded so the generator can use it."""
-    return get_user_active_role(user) in _TRUSTED_APPROVER_ROLES
+    """Generals skip the approval queue — their knowledge is auto-approved
+    and embedded immediately. Phase 2 extends this to Colonels of the
+    relevant Sector (which requires the sector context this legacy
+    endpoint doesn't yet have)."""
+    return is_general(user)
 
 
 async def _reindex_catalog_safe(db: AsyncSession, catalog_id: uuid.UUID) -> None:

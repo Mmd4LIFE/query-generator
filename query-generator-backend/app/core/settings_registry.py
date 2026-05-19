@@ -195,6 +195,17 @@ SETTINGS: Dict[str, SettingSpec] = {spec.key: spec for spec in [
         ui_type="int",
     ),
     SettingSpec(
+        key="retrieval.mmr_lambda",
+        category="retrieval",
+        description="MMR re-rank tradeoff for schema (object) chunks. "
+                    "1.0 = pure relevance (default behavior). "
+                    "Lower values diversify away from near-duplicate schema chunks. "
+                    "Typical sweet spot: 0.6–0.75. Set to 1.0 to disable.",
+        default=1.0,
+        validator=_is_float_in_range(0.0, 1.0),
+        ui_type="float",
+    ),
+    SettingSpec(
         key="embeddings.batch_size",
         category="embeddings",
         description="How many texts to send per OpenAI embedding API call.",
