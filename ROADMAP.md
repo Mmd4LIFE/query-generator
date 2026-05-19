@@ -112,11 +112,61 @@ Phases are ordered by dependency. Do not start phase N+1 until phase N has shipp
 - `app/routers/catalogs.py`, `app/routers/policies.py`, `app/routers/knowledge.py` — auth imports patched (`require_admin → require_general`, `require_data_guy → require_captain_anywhere`, `get_user_active_role → is_general`) so `main.py` boots cleanly. Endpoint scoping itself is Phase 2.
 - `app/core/settings_registry.py` — new `retrieval.mmr_lambda` setting registered.
 
-### Verification
+### Done — continuation (Phase 5 + embeddings.py rewrite)
 
-- `python -m py_compile` clean across all touched files.
-- Static AST scan: every `from app.deps.auth import ...` and `from app.core.<rewritten module> import ...` resolves to an actual exported symbol — **0 unresolved imports**.
-- No residual references to removed names (`require_admin`, `require_data_guy`, `get_user_active_role`, `super_admin`, `catalog_manager`, `data_analyst`, `viewer`, `qdrant_point_id`) outside the migration file (which intentionally drops them).
+- `app/core/embeddings.py` — **full rewrite** for the new schema:
+  - Drops `entity_id` / `qdrant_point_id` usage entirely; uses the concrete
+    `{object,note,metric,example,correction}_id` FKs.
+  - Every Embedding row + Qdrant payload now carries `sector_id` (derived
+    from `Catalog.sector_id`) and `embed_model` (live setting → env).
+  - Dedup is by `(kind, fk_id)`, not `(catalog_id, content)` — content
+    can collide across rows; the FK can't.
+  - Corrections come from the `Correction` table (only `status='approved'`),
+    not raw `QueryFeedback`. Soldiers' "suggested SQL" no longer auto-embeds.
+  - New `embed_one_knowledge_row(db, kind, row)` — embeds a single approved
+    row without a full catalog reindex (used by the approve handlers).
+  - New `delete_embeddings_for_row(db, kind, row_id)` — clean removal when
+    a row is rejected or deleted.
+  - `cleanup_rejected_embeddings()` rewritten to join on concrete FK columns
+    (was filtering by `(entity_id, kind)`).
+  - Two-phase commit preserved: PG flush → Qdrant upsert → PG commit;
+    best-effort Qdrant cleanup on PG rollback.
+
+- `app/core/openai_client.py` — `generate_embeddings(texts, *, model=None)`
+  now accepts an explicit model override (used by `embeddings.py` to stamp
+  the same model on every row), falls back to live setting → env when omitted.
+
+- **Phase 5 closed-loop is now wired end-to-end:**
+  - `app/routers/corrections.py` — **new router**, mounted at
+    `/v1/sectors/{sector_id}/corrections`:
+    - `GET /` (Soldier+) — list with `status`/`catalog_id` filters + pagination.
+    - `GET /{id}` (Soldier+) — single read.
+    - `POST /{id}/approve` (Colonel+) — embeds immediately via
+      `embed_one_knowledge_row`. **Enforces `approved_by != created_by`
+      even for Generals** (integrity rule, not a permission rule).
+    - `POST /{id}/reject` (Colonel+) — drops the embedding if one was
+      ever created (defensive — pending rows have none).
+    - Audit rows written on every state change via `write_audit`.
+    - `file_pending_correction(db, feedback, history)` helper exposed so
+      the feedback router can queue without import cycles.
+  - `app/routers/history.py` — feedback submission no longer triggers an
+    auto-reindex. When `suggested_sql` is present it now **files a pending
+    Correction** instead. The soldier's SQL is *never* embedded until a
+    Colonel reviews it.
+  - `app/main.py` — `corrections.router` registered.
+
+### Verification (latest)
+
+- `python -m py_compile` clean across every touched file in **both** sessions.
+- Static AST scan: 0 unresolved imports across the whole `app/` tree
+  (auth deps, retrieval, qdrant_client, embeddings, openai_client,
+  corrections, history, sectors, audit, all models).
+- Zero residual references to `require_admin`, `require_data_guy`,
+  `get_user_active_role`, `super_admin`, `catalog_manager`, `data_analyst`,
+  `viewer`, `entity_id`, `qdrant_point_id` — except in the migration file
+  (which intentionally drops them) and docstrings explaining the new model.
+- `routers/history.py` no longer imports `create_embeddings_for_catalog`
+  (the auto-reindex shortcut is gone — corrections go through review).
 
 ### Still not done
 

@@ -16,54 +16,61 @@ logger = structlog.get_logger()
 client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 
-async def generate_embeddings(texts: List[str]) -> List[List[float]]:
+async def generate_embeddings(
+    texts: List[str],
+    *,
+    model: Optional[str] = None,
+) -> List[List[float]]:
     """
-    Generate embeddings for a list of texts using OpenAI's embedding model.
-    
-    Args:
-        texts: List of text strings to embed
-        
-    Returns:
-        List of embedding vectors
+    Embed a list of texts.
+
+    The caller is expected to pass `model` explicitly when it matters
+    (writer paths in `app.core.embeddings` resolve the active model once
+    and stamp every row with it). When omitted we read the live
+    `embeddings.embed_model` setting, falling back to env.
     """
     if not texts:
         return []
-    
+
+    if model is None:
+        try:
+            from app.core.settings_service import get_value_standalone
+            v = await get_value_standalone("embeddings.embed_model", sector_id=None)
+            model = v if isinstance(v, str) and v.strip() else settings.embed_model
+        except Exception:
+            model = settings.embed_model
+
     try:
-        logger.info("Generating embeddings", count=len(texts), model=settings.embed_model)
+        logger.info("openai.embeddings.start", count=len(texts), model=model)
 
         # Batch size is admin-tunable via settings; env stays as the floor.
         from app.core.settings_service import get_value_standalone
         try:
-            batch_size = await get_value_standalone("embeddings.batch_size")
+            batch_size = await get_value_standalone(
+                "embeddings.batch_size", sector_id=None
+            )
             if not isinstance(batch_size, int) or batch_size < 1:
                 batch_size = settings.batch_size
         except Exception:
             batch_size = settings.batch_size
 
-        embeddings = []
-        
+        embeddings: List[List[float]] = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            
             response = await client.embeddings.create(
-                model=settings.embed_model,
+                model=model,
                 input=batch,
-                encoding_format="float"
+                encoding_format="float",
             )
-            
-            batch_embeddings = [data.embedding for data in response.data]
-            embeddings.extend(batch_embeddings)
-            
-            # Small delay to avoid rate limiting
+            embeddings.extend(d.embedding for d in response.data)
             if i + batch_size < len(texts):
                 await asyncio.sleep(0.1)
-        
-        logger.info("Embeddings generated successfully", count=len(embeddings))
+
+        logger.info("openai.embeddings.done", count=len(embeddings), model=model)
         return embeddings
-        
+
     except Exception as e:
-        logger.error("Failed to generate embeddings", error=str(e))
+        logger.error("openai.embeddings.failed", error=str(e), model=model)
         raise
 
 

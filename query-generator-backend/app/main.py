@@ -15,7 +15,16 @@ from app.core.config import settings
 from app.core.qdrant_client import qdrant_store
 from app.core.settings_service import seed_defaults as seed_settings_defaults
 from app.deps.db import create_db_and_tables
-from app.routers import auth, catalogs, generate, history, knowledge, policies, sectors
+from app.routers import (
+    auth,
+    catalogs,
+    corrections,
+    generate,
+    history,
+    knowledge,
+    policies,
+    sectors,
+)
 from app.routers import settings as settings_router
 
 
@@ -153,6 +162,11 @@ async def health_check():
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["authentication"])
 app.include_router(sectors.router, prefix="/v1/sectors", tags=["sectors"])
+app.include_router(
+    corrections.router,
+    prefix="/v1/sectors/{sector_id}/corrections",
+    tags=["corrections"],
+)
 app.include_router(catalogs.router, prefix="/v1/catalogs", tags=["catalogs"])
 app.include_router(knowledge.router, prefix="/v1", tags=["knowledge"])
 app.include_router(policies.router, prefix="/v1/policies", tags=["policies"])

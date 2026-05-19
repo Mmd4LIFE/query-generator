@@ -10,37 +10,40 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.embeddings import create_embeddings_for_catalog
 from app.deps.auth import require_user, User
 from app.deps.db import get_db
 from app.models.auth import User as UserModel
 from app.models.history import QueryFeedback, QueryHistory
 from app.models.catalog import Catalog
+from app.routers.corrections import file_pending_correction
 
 logger = structlog.get_logger()
 router = APIRouter()
 
 
-async def _reindex_for_feedback(
+async def _file_pending_correction(
     db: AsyncSession,
     history: QueryHistory,
     feedback: QueryFeedback,
 ) -> None:
-    """Embed actionable feedback so future similar questions benefit from it.
+    """File a pending Correction so a Colonel can review it.
 
-    Only reindex when the user provided a teachable correction
-    (suggested_sql or improvement_notes); pure ratings carry no LLM signal.
+    Replaces the legacy auto-reindex shortcut. The soldier's SQL is **not**
+    embedded until a Colonel approves it via the corrections router — the
+    soldier could be wrong, malicious, or just confused. The review queue
+    is the integrity gate (see ROADMAP §Phase-5).
     """
-    if not feedback.suggested_sql and not feedback.improvement_notes:
+    if not feedback.suggested_sql:
         return
     try:
-        await create_embeddings_for_catalog(db, history.catalog_id, force=False)
-    except Exception as e:
+        await file_pending_correction(db, feedback=feedback, history=history)
+    except Exception as exc:
+        # Don't block the feedback write on this — the correction can be
+        # filed later via a manual re-submit.
         logger.error(
-            "Auto-reindex failed after feedback",
-            catalog_id=history.catalog_id,
-            history_id=history.id,
-            error=str(e),
+            "file_pending_correction_failed",
+            history_id=str(history.id),
+            error=str(exc),
         )
 
 
@@ -296,8 +299,10 @@ async def create_feedback(
             rating=feedback_create.rating
         )
 
-    # Re-embed the catalog so the correction is available to future generations.
-    await _reindex_for_feedback(db, history, feedback)
+    # File a pending Correction for Colonel review. Embedding only happens
+    # after the Colonel approves it.
+    await _file_pending_correction(db, history, feedback)
+    await db.commit()
 
     return FeedbackResponse(
         id=feedback.id,
