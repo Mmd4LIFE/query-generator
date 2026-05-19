@@ -35,7 +35,15 @@ depends_on: Union[str, Sequence[str], None] = None
 # Fixed sentinel — Sector Zero. Every pre-existing row gets parented to this
 # so the migration is non-destructive: a single-tenant install before this
 # revision becomes a single-Sector install after it.
+#
+# Inlined into SQL with an explicit `::uuid` cast everywhere it's used.
+# Why not `sa.text(...).bindparams(id=...)`? — SQLAlchemy infers the bind
+# parameter type from the Python value; a `str` gets rendered as `$1::VARCHAR`
+# which Postgres refuses to implicit-cast into UUID. Using a literal +
+# `::uuid` cast keeps the migration portable and avoids type-inference
+# subtleties on Postgres servers that disable implicit casts.
 SECTOR_ZERO_ID = "00000000-0000-0000-0000-000000000001"
+SECTOR_ZERO_SQL = f"'{SECTOR_ZERO_ID}'::uuid"
 
 
 def upgrade() -> None:
@@ -59,10 +67,10 @@ def upgrade() -> None:
 
     op.execute(
         sa.text(
-            "INSERT INTO dq_sectors (id, code, name, description, is_active) "
-            "VALUES (:id, 'sector_zero', 'Sector Zero', "
-            "'Default sector — all pre-overhaul data lives here.', TRUE)"
-        ).bindparams(id=SECTOR_ZERO_ID)
+            f"INSERT INTO dq_sectors (id, code, name, description, is_active) "
+            f"VALUES ({SECTOR_ZERO_SQL}, 'sector_zero', 'Sector Zero', "
+            f"'Default sector — all pre-overhaul data lives here.', TRUE)"
+        )
     )
 
     # ------------------------------------------------------------------
@@ -129,9 +137,7 @@ def upgrade() -> None:
             table,
             sa.Column("sector_id", postgresql.UUID(as_uuid=True), nullable=True),
         )
-        op.execute(
-            sa.text(f"UPDATE {table} SET sector_id = :sid").bindparams(sid=SECTOR_ZERO_ID)
-        )
+        op.execute(sa.text(f"UPDATE {table} SET sector_id = {SECTOR_ZERO_SQL}"))
         op.alter_column(table, "sector_id", nullable=False)
         op.create_foreign_key(
             f"fk_{table}_sector",
@@ -161,8 +167,9 @@ def upgrade() -> None:
     # Non-general roles get parented to Sector Zero.
     op.execute(
         sa.text(
-            "UPDATE auth_user_roles SET sector_id = :sid WHERE role_name <> 'general'"
-        ).bindparams(sid=SECTOR_ZERO_ID)
+            f"UPDATE auth_user_roles SET sector_id = {SECTOR_ZERO_SQL} "
+            f"WHERE role_name <> 'general'"
+        )
     )
     op.create_foreign_key(
         "fk_user_roles_sector",
