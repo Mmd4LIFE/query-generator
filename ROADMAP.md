@@ -386,17 +386,50 @@ Phases are ordered by dependency. Do not start phase N+1 until phase N has shipp
   consumer; bundle with Phase 7 generate page work).
 - 🔲 Pagination still ad-hoc per router; should be standardised.
 
-**Phase 7 (frontend)** — foundation laid
+**Phase 7 (frontend)** — Sectors admin shipped
 
 - ✅ Role vocabulary + `sectors[]` plumbing through api-client.
 - ✅ Sector switcher in header; auto-pick + localStorage persistence.
-- ✅ All sector-scoped methods updated; new endpoints (corrections,
-  cost-summary, sector settings, member assignment) exposed.
+- ✅ **Generals now resolve their "current Sector" from `/v1/sectors`**
+  (their JWT has `sectors=[]` since they're cross-tenant). Every active
+  Sector is surfaced as a synthetic membership with role='general' so
+  the switcher renders them and sector-scoped requests have a target.
+  This closes the "No current sector selected" error a General hit
+  when navigating to a sector-scoped page.
+- ✅ **SectorsAdminPage** (General-only): one-page management surface
+  - Lists every active + archived Sector, with code, name, description.
+  - Create Sector dialog with code-normalisation (lowercase, no spaces).
+  - Edit Sector dialog (rename, description, active toggle).
+  - Archive confirmation (soft-delete, reversible by toggling Active back on).
+  - Inline-expandable members list per Sector with role badge.
+  - Add-member form: dropdown of eligible users × {Colonel, Captain, Soldier}.
+  - Remove-member action.
+  - Switcher refreshes automatically after every create / rename / archive.
+- ✅ Navigation entry "Sectors" appears only when `permissions.isGeneral`.
+- ✅ api-client gains `createSector`, `updateSector`, `deleteSector`,
+  `listSectorMembers`. `getUserPermissions()` now exposes `isGeneral`
+  separately from the legacy `isAdmin` alias.
 - 🔲 Sector-specific pages still missing: Corrections review queue UI,
-  Sector settings UI, cost dashboards, member management UI.
+  Sector settings UI, cost dashboards.
 - 🔲 Generate page URL move (under `/v1/sectors/{sid}/generate`) +
   SSE consumer.
 - 🔲 SQL syntax highlighting, Cmd+Enter, empty states.
+
+### Migration UUID-bind bug (fixed)
+
+The Phase-1 migration's three `sa.text(...).bindparams(...)` sites bound
+the Sector Zero UUID as a Python `str`; SQLAlchemy rendered the bind as
+`$1::VARCHAR`, Postgres refused the implicit cast to UUID:
+
+> `column "id" is of type uuid but expression is of type character varying`
+
+Fixed by introducing `SECTOR_ZERO_SQL = f"'{SECTOR_ZERO_ID}'::uuid"` and
+inlining the literal-plus-cast at all three sites (INSERT into
+`dq_sectors`; the `UPDATE … SET sector_id = …` backfill loop over 9
+tenant-scoped tables; and the `auth_user_roles` non-General backfill).
+Migration is wrapped in a transaction so any partial state from the
+failed run rolled back cleanly. Just rerun `docker compose up` (no
+volume wipe needed).
 
 **Phase 4 (RAG)** — not started
 

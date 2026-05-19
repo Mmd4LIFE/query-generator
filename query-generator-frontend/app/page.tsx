@@ -23,9 +23,10 @@ import { QueryHistoryPage } from "@/components/query-history-page"
 import { ManageCatalogsPage } from "@/components/manage-catalogs-page"
 import { UserSettingsPage } from "@/components/user-settings-page"
 import { SettingsPage } from "@/components/settings-page"
+import { SectorsAdminPage } from "@/components/sectors-admin-page"
 import { getUserPermissions } from "@/lib/utils"
 
-type Page = "generate" | "catalogs" | "users" | "history" | "settings"
+type Page = "generate" | "catalogs" | "users" | "history" | "settings" | "sectors"
 
 export default function QueryGeneratorApp() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -43,23 +44,46 @@ export default function QueryGeneratorApp() {
   const [sectors, setSectors] = useState<SectorMembership[]>([])
   const [activeSectorId, setActiveSectorId] = useState<string | null>(null)
 
-  const applySectorContextFromProfile = (profile: any) => {
-    const list: SectorMembership[] = Array.isArray(profile?.sectors) ? profile.sectors : []
+  const applySectorContextFromProfile = async (profile: any) => {
+    let list: SectorMembership[] = Array.isArray(profile?.sectors) ? profile.sectors : []
+
+    // Generals carry no `sectors[]` in the JWT (their authority is global),
+    // but they still need a "current Sector" to act inside. Fetch the full
+    // Sector roster from the server and surface every one as a synthetic
+    // membership with role='general' so the switcher renders them and
+    // sector-scoped requests have a target.
+    if (profile?.is_general) {
+      try {
+        const all = await api.listSectors()
+        const owned = new Set(list.map((s) => s.sector_id))
+        const synthesised: SectorMembership[] = all
+          .filter((s) => s.is_active && !owned.has(s.id))
+          .map((s) => ({
+            sector_id: s.id,
+            sector_code: s.code,
+            sector_name: s.name,
+            role: 'general',
+          }))
+        list = [...list, ...synthesised]
+      } catch (err) {
+        console.error('Failed to load Sectors for General context', err)
+      }
+    }
+
     setSectors(list)
 
-    // Restore the user's last choice if it's still in their membership list.
+    // Restore the user's last choice if it's still in the visible list.
     const stored = typeof window !== 'undefined' ? localStorage.getItem('current_sector_id') : null
     const validStored = stored && list.some((s) => s.sector_id === stored) ? stored : null
 
-    const pick = validStored ?? (list.length === 1 ? list[0].sector_id : null)
+    const pick = validStored ?? (list.length > 0 ? list[0].sector_id : null)
     if (pick) {
       setActiveSectorId(pick)
       api.setCurrentSector(pick)
       if (typeof window !== 'undefined') localStorage.setItem('current_sector_id', pick)
-    } else if (profile?.is_general && list.length === 0) {
-      // General with no explicit memberships — leave unset; they'll pick one
-      // from the cross-Sector list (fetched separately).
+    } else {
       setActiveSectorId(null)
+      api.setCurrentSector(null)
     }
   }
 
@@ -220,7 +244,7 @@ export default function QueryGeneratorApp() {
                 placeholder="Enter password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                onKeyPress={(e) => e.key === "Enter" && handleLogin()}
+                onKeyDown={(e) => e.key === "Enter" && handleLogin()}
               />
             </div>
             {error && (
@@ -346,6 +370,16 @@ export default function QueryGeneratorApp() {
             />
           )}
           {currentPage === "users" && <UserSettingsPage api={api} />}
+          {currentPage === "sectors" && permissions.isGeneral && (
+            <SectorsAdminPage
+              api={api}
+              onSectorsChanged={() => {
+                // Refresh the header switcher when a sector is added /
+                // renamed / archived so the new state is visible immediately.
+                applySectorContextFromProfile(userProfile)
+              }}
+            />
+          )}
           {currentPage === "settings" && permissions.isAdmin && (
             <SettingsPage api={api} />
           )}

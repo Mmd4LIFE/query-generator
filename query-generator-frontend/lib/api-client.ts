@@ -650,6 +650,41 @@ export class QueryGeneratorAPIClient {
     return this.request<Sector[]>('/v1/sectors')
   }
 
+  async createSector(body: { code: string; name: string; description?: string }): Promise<Sector> {
+    return this.request<Sector>('/v1/sectors', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  }
+
+  async getSector(sectorId: string): Promise<Sector> {
+    return this.request<Sector>(`/v1/sectors/${sectorId}`)
+  }
+
+  async updateSector(
+    sectorId: string,
+    body: { name?: string; description?: string; is_active?: boolean },
+  ): Promise<Sector> {
+    return this.request<Sector>(`/v1/sectors/${sectorId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    })
+  }
+
+  async deleteSector(sectorId: string): Promise<void> {
+    await this.request(`/v1/sectors/${sectorId}`, { method: 'DELETE' })
+  }
+
+  async listSectorMembers(sectorId: string): Promise<Array<{
+    user_id: string
+    username: string
+    email: string
+    full_name?: string | null
+    role: 'colonel' | 'captain' | 'soldier'
+  }>> {
+    return this.request(`/v1/sectors/${sectorId}/members`)
+  }
+
   // ---- Catalogs (sector-scoped) ----
 
   async getCatalogs(): Promise<CatalogSummary[]> {
