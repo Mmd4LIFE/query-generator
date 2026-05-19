@@ -114,7 +114,7 @@ async def create_sector(
         await db.rollback()
         raise HTTPException(status_code=400, detail=f"Sector code '{payload.code}' already exists")
     await db.refresh(sector)
-    await write_audit(
+    write_audit(
         db, actor_id=current_user.id, action="sector.create",
         sector_id=sector.id, target_type="sector", target_id=sector.id,
         diff={"after": {"code": sector.code, "name": sector.name}},
@@ -148,7 +148,7 @@ async def update_sector(
         sector.is_active = payload.is_active
     await db.commit()
     await db.refresh(sector)
-    await write_audit(
+    write_audit(
         db, actor_id=current_user.id, action="sector.update",
         sector_id=sector.id, target_type="sector", target_id=sector.id,
         diff={"before": before, "after": {
@@ -174,7 +174,7 @@ async def archive_sector(
     sector.deleted_at = datetime.utcnow()
     sector.is_active = False
     await db.commit()
-    await write_audit(
+    write_audit(
         db, actor_id=current_user.id, action="sector.archive",
         sector_id=sector.id, target_type="sector", target_id=sector.id,
     )
@@ -236,7 +236,7 @@ async def assign_member(
     new_role = UserRole(user_id=user.id, sector_id=ctx.sector.id, role_name=payload.role)
     db.add(new_role)
     await db.commit()
-    await write_audit(
+    write_audit(
         db, actor_id=current_user.id, action="member.assign",
         sector_id=ctx.sector.id, target_type="user", target_id=user.id,
         diff={"role": payload.role},
@@ -268,7 +268,7 @@ async def remove_member(
 
     role.deleted_at = datetime.utcnow()
     await db.commit()
-    await write_audit(
+    write_audit(
         db, actor_id=current_user.id, action="member.remove",
         sector_id=ctx.sector.id, target_type="user", target_id=user_id,
         diff={"removed_role": role.role_name},

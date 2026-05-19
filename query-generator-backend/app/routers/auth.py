@@ -190,7 +190,7 @@ async def create_user(
     await db.commit()
     await db.refresh(user)
 
-    await write_audit(
+    write_audit(
         db,
         actor_id=current_user.id,
         action="user.create",
@@ -257,7 +257,7 @@ async def update_user(
     await db.commit()
     await db.refresh(user)
 
-    await write_audit(
+    write_audit(
         db,
         actor_id=current_user.id,
         action="user.update",
@@ -296,7 +296,7 @@ async def set_user_status(
     user.is_active = payload.is_active
     user.updated_at = datetime.utcnow()
     await db.commit()
-    await write_audit(
+    write_audit(
         db,
         actor_id=current_user.id,
         action="user.status",
@@ -329,7 +329,7 @@ async def delete_user(
     username = user.username
     await db.delete(user)
     await db.commit()
-    await write_audit(
+    write_audit(
         db,
         actor_id=current_user.id,
         action="user.delete",
@@ -374,7 +374,7 @@ async def promote_to_general(
     db.add(role)
     await db.commit()
     await db.refresh(role)
-    await write_audit(
+    write_audit(
         db,
         actor_id=current_user.id,
         action="user.promote_general",
@@ -411,7 +411,7 @@ async def revoke_general(
         raise HTTPException(status_code=404, detail="User is not a General")
     role.deleted_at = datetime.utcnow()
     await db.commit()
-    await write_audit(
+    write_audit(
         db,
         actor_id=current_user.id,
         action="user.revoke_general",

@@ -7,8 +7,16 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Database, User, LogOut, Play } from "lucide-react"
+import { Database, User, LogOut, Play, Shield } from "lucide-react"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { QueryGeneratorAPI } from "@/lib/api"
+import type { SectorMembership } from "@/lib/api"
 import { Navigation } from "@/components/navigation"
 import { QueryGenerator } from "@/components/query-generator"
 import { QueryHistoryPage } from "@/components/query-history-page"
@@ -29,6 +37,37 @@ export default function QueryGeneratorApp() {
   const [userProfile, setUserProfile] = useState<any>(null)
   const [isInitializing, setIsInitializing] = useState(true)
   const [api] = useState(() => new QueryGeneratorAPI())
+  // Sector context — General sees a switcher across every Sector; Colonels/
+  // Captains/Soldiers see only theirs. The chosen sector_id is forwarded
+  // by api-client on every sector-scoped request.
+  const [sectors, setSectors] = useState<SectorMembership[]>([])
+  const [activeSectorId, setActiveSectorId] = useState<string | null>(null)
+
+  const applySectorContextFromProfile = (profile: any) => {
+    const list: SectorMembership[] = Array.isArray(profile?.sectors) ? profile.sectors : []
+    setSectors(list)
+
+    // Restore the user's last choice if it's still in their membership list.
+    const stored = typeof window !== 'undefined' ? localStorage.getItem('current_sector_id') : null
+    const validStored = stored && list.some((s) => s.sector_id === stored) ? stored : null
+
+    const pick = validStored ?? (list.length === 1 ? list[0].sector_id : null)
+    if (pick) {
+      setActiveSectorId(pick)
+      api.setCurrentSector(pick)
+      if (typeof window !== 'undefined') localStorage.setItem('current_sector_id', pick)
+    } else if (profile?.is_general && list.length === 0) {
+      // General with no explicit memberships — leave unset; they'll pick one
+      // from the cross-Sector list (fetched separately).
+      setActiveSectorId(null)
+    }
+  }
+
+  const handleSectorChange = (sectorId: string) => {
+    setActiveSectorId(sectorId)
+    api.setCurrentSector(sectorId)
+    if (typeof window !== 'undefined') localStorage.setItem('current_sector_id', sectorId)
+  }
 
   // Get user permissions
   const permissions = getUserPermissions(userProfile)
@@ -48,6 +87,7 @@ export default function QueryGeneratorApp() {
           api.setToken(storedToken)
           const profile = await api.getUserProfile()
           setUserProfile(profile)
+          applySectorContextFromProfile(profile)
           setIsAuthenticated(true)
           console.log('✅ Restored authentication from stored token')
         } else if (api.isDemoMode()) {
@@ -93,6 +133,7 @@ export default function QueryGeneratorApp() {
       const profile = await api.getUserProfile()
       console.log('👤 User profile:', profile)
       setUserProfile(profile)
+      applySectorContextFromProfile(profile)
       setIsAuthenticated(true)
     } catch (err) {
       console.error('❌ Login failed:', err)
@@ -121,9 +162,12 @@ export default function QueryGeneratorApp() {
 
   const handleLogout = () => {
     localStorage.removeItem('auth_token')
+    localStorage.removeItem('current_sector_id')
     api.clearToken()
     setIsAuthenticated(false)
     setUserProfile(null)
+    setSectors([])
+    setActiveSectorId(null)
     setCurrentPage("generate")
     api.setDemoMode(false)
   }
@@ -231,6 +275,37 @@ export default function QueryGeneratorApp() {
             </div>
           </div>
           <div className="flex items-center space-x-2">
+            {/* Sector switcher — visible when the caller belongs to 2+ Sectors */}
+            {sectors.length > 1 && (
+              <div className="flex items-center space-x-1">
+                <Shield className="w-3 h-3 text-muted-foreground hidden sm:block" />
+                <Select
+                  value={activeSectorId ?? undefined}
+                  onValueChange={handleSectorChange}
+                >
+                  <SelectTrigger className="h-8 w-[160px] text-xs">
+                    <SelectValue placeholder="Pick a Sector" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sectors.map((s) => (
+                      <SelectItem key={s.sector_id} value={s.sector_id}>
+                        {s.sector_name || s.sector_code}{" "}
+                        <span className="text-muted-foreground text-[10px]">
+                          ({s.role})
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {sectors.length === 1 && (
+              <Badge variant="outline" className="hidden md:flex items-center space-x-1 text-xs">
+                <Shield className="w-3 h-3" />
+                <span>{sectors[0].sector_name || sectors[0].sector_code}</span>
+                <span className="text-muted-foreground">· {sectors[0].role}</span>
+              </Badge>
+            )}
             <Badge variant="secondary" className="hidden sm:flex items-center space-x-1">
               <User className="w-3 h-3" />
               <span>{userProfile?.username || username}</span>

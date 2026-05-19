@@ -112,6 +112,112 @@ Phases are ordered by dependency. Do not start phase N+1 until phase N has shipp
 - `app/routers/catalogs.py`, `app/routers/policies.py`, `app/routers/knowledge.py` — auth imports patched (`require_admin → require_general`, `require_data_guy → require_captain_anywhere`, `get_user_active_role → is_general`) so `main.py` boots cleanly. Endpoint scoping itself is Phase 2.
 - `app/core/settings_registry.py` — new `retrieval.mmr_lambda` setting registered.
 
+### Done — continuation (sector settings + Phase 6 + Phase 7)
+
+**Sector settings (closes Phase 2)**
+
+- `app/core/settings_registry.py` — `SettingSpec` gains
+  `sector_overridable: bool = True`. `embeddings.batch_size` is marked
+  `False` (operational, must stay uniform).
+- `app/routers/sector_settings.py` — **new**, mounted at
+  `/v1/sectors/{sector_id}/settings`:
+  - `GET /` / `GET /{key}` — Colonel+ reads with `source` flag
+    (`'sector' | 'global' | 'default'`).
+  - `PUT /{key}` — Colonel+ writes a sector override. Refuses keys whose
+    spec is `sector_overridable=False` with HTTP 400.
+  - `POST /{key}/reset` — drop the override; global / default applies.
+  - Audit-logged via `write_audit`.
+
+**Audit footgun fix**
+
+- `write_audit` was `async` but did no I/O. Half the routers (catalogs,
+  policies, knowledge, corrections, sector_settings) called it without
+  `await`, silently producing a never-executed coroutine and **no audit
+  row**. Function is now sync; the two routers that had it right
+  (sectors, auth) lost their `await` keywords. Going forward, misuse is
+  a name error rather than a silent no-op.
+
+**Phase 6 — observability + structured errors**
+
+- `app/main.py`:
+  - **Correlation IDs** on every request via new
+    `correlation_middleware`. Honours inbound `X-Correlation-ID` /
+    `X-Request-ID`; otherwise mints a fresh UUID. Stored on
+    `request.state` and bound into `structlog.contextvars` so every log
+    line in the request carries it without manual plumbing. Returned as
+    a response header.
+  - Exception handlers now embed the correlation ID in the JSON body
+    AND the response header. Operators grep one ID, users quote one ID.
+  - Structlog processor chain prepended with `merge_contextvars` so
+    correlation IDs surface in JSON logs automatically.
+- `app/routers/cost_summary.py` — **new**:
+  - `GET /v1/sectors/{sid}/cost-summary` — Colonel+. Supports
+    `from` / `to` date range and `group_by=day|user|model`.
+  - `GET /v1/cost-summary` — General-only cross-sector aggregate.
+    Defaults to `group_by=sector` so the General immediately sees
+    spend per tenant. Accepts optional `sector_id` filter for drill-down.
+  - Server caps row count at 500; group_by=day returns all days in
+    range, group_by=user/model/sector returns top-N by total cost.
+
+**Phase 7 — frontend rewiring**
+
+- `lib/utils.ts` — **full rewrite** for the new role vocabulary:
+  - New `Role = 'general' | 'colonel' | 'captain' | 'soldier'` and
+    `SectorMembership` types.
+  - `isGeneral`, `roleInSector`, `hasRoleAnywhere`, plus the existing
+    `isAdmin` / `canManageCatalogs` / `canManageSecurityPolicies` /
+    `canManageUsers` / `canGenerateQueries` / `canApproveKnowledge`
+    helpers all rewritten to read from `is_general` + `sectors[]`.
+  - Legacy `admin` / `data_guy` / `user` tokens still recognised
+    (gracefully degrade to general / captain / soldier) so a stale
+    pre-Phase-1 token doesn't crash the UI.
+  - `getRoleDisplayName` returns the War-Lit name (General, Colonel,
+    Captain, Soldier).
+
+- `lib/api-client.ts` — **full rewrite**:
+  - New `currentSectorId` state + `setCurrentSector` / `getCurrentSector`.
+    Sector-scoped methods build URLs via `this.sectorPath()` and throw
+    a `SectorRequiredError` if no sector is selected.
+  - `setToken()` now decodes the JWT payload to cache `is_general` and
+    `sectors[]` for the frontend (authoritative checks still re-hit
+    `/auth/me` on the server).
+  - All catalog / knowledge / policy / history endpoints route through
+    `/v1/sectors/{sid}/...`. Policy URL is the nested
+    `…/catalogs/{cid}/policy`.
+  - **New methods**: `listSectors`, `listCorrections`,
+    `approveCorrection`, `rejectCorrection`, `getSectorCostSummary`,
+    `getGlobalCostSummary`, `listSectorSettings` (+ get/update/reset),
+    `assignUserRole(userId, role, sectorId?)`,
+    `promoteToGeneral`, `revokeGeneral`.
+  - `assignUserRole` transparently maps legacy role strings (`admin` →
+    General path; `data_guy`/`user` → Sector member API) so the
+    existing user-settings page works without changes.
+  - Correlation IDs surfaced via `console.error` when present in error
+    payloads.
+  - `lib/api.ts` re-exports the new types (`Role`, `Sector`,
+    `SectorMembership`, `Correction`, `CostRow`, `CostSummary`).
+
+- `app/page.tsx`:
+  - Reads `sectors[]` from the profile after login and on session
+    restore; auto-picks the only Sector when there's just one, otherwise
+    restores the last choice from `localStorage` (`current_sector_id`).
+  - Header shows a **Sector switcher** when the user has 2+ memberships,
+    a sticky Sector badge when there's exactly one.
+  - `handleSectorChange` persists the new sector and updates the API
+    client so subsequent requests use the new prefix.
+
+- `components/debug-panel.tsx` — render fix for the new `roles[]` shape
+  (objects with `role_name` + optional `sector_id`).
+
+### Verification (latest)
+
+- Backend: `python -m py_compile` clean across the entire `app/` tree
+  (including all five domain routers + the two new ones).
+- Backend: AST cross-reference returns **0 unresolved imports**.
+- Frontend: `tsc --noEmit -p tsconfig.json` exits 0.
+- No `await write_audit` survivors anywhere; `write_audit` is correctly
+  sync and 24 call sites use it without `await`.
+
 ### Done — continuation (Phase 2 finish: history, policies, knowledge)
 
 - `app/routers/history.py` — **full rewrite**, mounted at
@@ -255,21 +361,42 @@ Phases are ordered by dependency. Do not start phase N+1 until phase N has shipp
 
 ### Still not done
 
-**Phase 2 (access control everywhere)** — **mostly complete**
+**Phase 2 (access control everywhere)** — **complete**
 
 - ✅ `catalogs` — sector-scoped, audit-logged, per-Sector name uniqueness.
 - ✅ `generate` — IDOR closed via `_load_catalog_for_user`; `sector_id`
-  stamped on every history row. URL move under `/v1/sectors/{sid}/`
-  bundled with Phase 7 frontend rewrite.
+  stamped on every history row. URL stays at `/v1/generate` until Phase
+  7 frontend rewires.
 - ✅ `history` — visibility rule (own vs Sector-wide for Colonel+),
   `sector_id` stamped on feedback, correction-status surfaced.
 - ✅ `policies` — Soldier+ read, Colonel+ write; sector-scoped under
   `/v1/sectors/{sid}/catalogs/{cid}/policy` with full audit diffs.
 - ✅ `knowledge` — Captain+ create, Colonel+ approve, **`approved_by !=
   created_by` enforced for all kinds**, per-row embed/delete, audit.
-- 🔲 `settings` — global-only path still correct for Phase 1. Sector-
-  overrides path `GET/PUT /v1/sectors/{sid}/settings/{key}` remains
-  pending (Phase 8).
+- ✅ `settings` — global path stays General-only; sector-overrides path
+  `/v1/sectors/{sid}/settings/{key}` is live (Colonel+, `sector_overridable`
+  flag enforced).
+
+**Phase 6 (API hardening)** — partial
+
+- ✅ Correlation IDs (middleware + structlog contextvars + error
+  responses).
+- ✅ `/cost-summary` endpoints (sector + global).
+- 🔲 SSE streaming on `/generate` — deferred (needs matching frontend
+  consumer; bundle with Phase 7 generate page work).
+- 🔲 Pagination still ad-hoc per router; should be standardised.
+
+**Phase 7 (frontend)** — foundation laid
+
+- ✅ Role vocabulary + `sectors[]` plumbing through api-client.
+- ✅ Sector switcher in header; auto-pick + localStorage persistence.
+- ✅ All sector-scoped methods updated; new endpoints (corrections,
+  cost-summary, sector settings, member assignment) exposed.
+- 🔲 Sector-specific pages still missing: Corrections review queue UI,
+  Sector settings UI, cost dashboards, member management UI.
+- 🔲 Generate page URL move (under `/v1/sectors/{sid}/generate`) +
+  SSE consumer.
+- 🔲 SQL syntax highlighting, Cmd+Enter, empty states.
 
 **Phase 4 (RAG)** — not started
 

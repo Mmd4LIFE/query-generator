@@ -127,6 +127,10 @@ class SettingSpec:
     # For UI rendering hints — frontend can switch widgets on this.
     ui_type: str = "text"
     choices: Optional[List[Dict[str, Any]]] = None
+    # When False, Colonels cannot override this in a Sector. Used for
+    # operational dials that must stay uniform across tenants (e.g.
+    # OpenAI batch size, cache config). General is the only writer.
+    sector_overridable: bool = True
 
 
 def _gen_model_choices() -> List[Dict[str, Any]]:
@@ -212,6 +216,8 @@ SETTINGS: Dict[str, SettingSpec] = {spec.key: spec for spec in [
         default=64,
         validator=_is_int_in_range(1, 2048),
         ui_type="int",
+        # Operational dial — must be uniform across tenants.
+        sector_overridable=False,
     ),
     SettingSpec(
         key="prompt.system_template",

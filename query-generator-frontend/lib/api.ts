@@ -1,9 +1,10 @@
 // Re-export everything from the professional API client
-export { 
+export {
   QueryGeneratorAPIClient as QueryGeneratorAPI,
   ApiError,
   NetworkError,
-  AuthenticationError
+  AuthenticationError,
+  SectorRequiredError,
 } from './api-client'
 
 export type {
@@ -12,7 +13,11 @@ export type {
   GenerateQueryRequest,
   QueryResult,
   UserProfile,
+  SectorMembership,
+  Sector,
+  Role,
   Catalog,
+  CatalogSummary,
   SecurityPolicy,
   UpdatePolicyRequest,
   CreateCatalogRequest,
@@ -21,6 +26,9 @@ export type {
   QueryHistoryItem,
   QueryFeedback,
   SubmitFeedbackRequest,
+  Correction,
+  CostRow,
+  CostSummary,
   SettingItem,
   GenModelInfo,
   EmbedModelInfo,

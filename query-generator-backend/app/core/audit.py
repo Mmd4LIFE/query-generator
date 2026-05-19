@@ -19,7 +19,7 @@ from app.models.audit import AuditLog
 logger = structlog.get_logger()
 
 
-async def write_audit(
+def write_audit(
     db: AsyncSession,
     *,
     actor_id: uuid.UUID,
@@ -30,6 +30,11 @@ async def write_audit(
     diff: Optional[Dict[str, Any]] = None,
 ) -> AuditLog:
     """Stage an `AuditLog` row on the given session. Caller commits.
+
+    **Synchronous** — `db.add` and `logger.info` are both sync, so making
+    this `async` was a footgun: half the callers forgot the `await` and
+    got a never-executed coroutine instead of an audit row. Keeping it
+    sync makes misuse a name error, not a silent no-op.
 
     `action` is a dotted string identifying the operation
     (e.g. `sector.create`, `member.assign`, `policy.update`).

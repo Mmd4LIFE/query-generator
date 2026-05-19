@@ -68,9 +68,12 @@ export function DebugPanel({ userProfile, isVisible = false }: DebugPanelProps) 
                   <div><strong>Username:</strong> {userProfile.username || 'undefined'}</div>
                   <div><strong>Email:</strong> {userProfile.email || 'undefined'}</div>
                   <div><strong>Role:</strong> <Badge variant="secondary" className="text-xs">{userProfile.role || 'undefined'}</Badge></div>
-                  <div><strong>Roles:</strong> {userProfile.roles ? userProfile.roles.map(role => 
-                    <Badge key={role} variant="outline" className="text-xs mr-1">{role}</Badge>
-                  ) : 'undefined'}</div>
+                  <div><strong>Roles:</strong> {userProfile.roles ? userProfile.roles.map((role: any, i: number) => {
+                    const label = typeof role === 'string'
+                      ? role
+                      : `${role.role_name}${role.sector_id ? ` @ ${role.sector_id.slice(0, 8)}…` : ''}`
+                    return <Badge key={i} variant="outline" className="text-xs mr-1">{label}</Badge>
+                  }) : 'undefined'}</div>
                   <div><strong>Active:</strong> {userProfile.is_active ? '✅' : '❌'}</div>
                   <div><strong>ID:</strong> {userProfile.id || 'undefined'}</div>
                   <div className="mt-2 p-2 bg-gray-50 rounded text-xs">
