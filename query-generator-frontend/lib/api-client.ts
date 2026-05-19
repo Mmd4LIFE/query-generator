@@ -687,6 +687,18 @@ export class QueryGeneratorAPIClient {
 
   // ---- Catalogs (sector-scoped) ----
 
+  /**
+   * Build the `/v1/sectors/{sid}` prefix using either the explicit
+   * `sectorIdOverride` (used by Generals importing into a non-active Sector)
+   * or the client-wide `currentSectorId`. Throws SectorRequiredError when
+   * neither is set.
+   */
+  private sectorPathFor(sectorIdOverride?: string | null): string {
+    const sid = sectorIdOverride ?? this.currentSectorId
+    if (!sid) throw new SectorRequiredError()
+    return `/v1/sectors/${sid}`
+  }
+
   async getCatalogs(): Promise<CatalogSummary[]> {
     if (this.demoMode) return []
     return this.request<CatalogSummary[]>(`${this.sectorPath()}/catalogs`)
@@ -696,8 +708,17 @@ export class QueryGeneratorAPIClient {
     return this.request<Catalog>(`${this.sectorPath()}/catalogs/${catalogId}`)
   }
 
-  async createCatalog(body: CreateCatalogRequest): Promise<Catalog> {
-    return this.request<Catalog>(`${this.sectorPath()}/catalogs`, {
+  /**
+   * Create a catalog. Defaults to the client's `currentSectorId`; pass
+   * `sectorIdOverride` (Generals only) to import into a Sector other than
+   * the one currently active in the header switcher, without mutating
+   * client-wide state.
+   */
+  async createCatalog(
+    body: CreateCatalogRequest,
+    sectorIdOverride?: string,
+  ): Promise<Catalog> {
+    return this.request<Catalog>(`${this.sectorPathFor(sectorIdOverride)}/catalogs`, {
       method: 'POST',
       body: JSON.stringify(body),
     })
@@ -710,8 +731,12 @@ export class QueryGeneratorAPIClient {
     })
   }
 
-  async reindexCatalog(catalogId: string, force = false): Promise<any> {
-    return this.request(`${this.sectorPath()}/catalogs/${catalogId}/reindex`, {
+  async reindexCatalog(
+    catalogId: string,
+    force = false,
+    sectorIdOverride?: string,
+  ): Promise<any> {
+    return this.request(`${this.sectorPathFor(sectorIdOverride)}/catalogs/${catalogId}/reindex`, {
       method: 'POST',
       body: JSON.stringify({ force }),
     })

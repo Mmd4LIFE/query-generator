@@ -28,10 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.deps.auth import (
     SectorContext,
-    current_sector,
+    User,
+    get_current_active_user,
     require_sector_colonel,
     require_sector_soldier,
-    User,
 )
 from app.deps.db import get_db
 from app.models.catalog import Catalog
@@ -140,9 +140,8 @@ def _to_response(p: Policy) -> PolicyResponse:
 async def get_policy(
     catalog_id: uuid.UUID,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_soldier),
 ) -> PolicyResponse:
     await _assert_catalog_in_sector(
         db, catalog_id=catalog_id, sector_id=sector.sector.id
@@ -163,9 +162,9 @@ async def update_policy(
     catalog_id: uuid.UUID,
     body: PolicyUpdate,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_colonel),
+    actor: User = Depends(get_current_active_user),
 ) -> PolicyResponse:
     """Soft-delete the active policy and insert a new version.
 

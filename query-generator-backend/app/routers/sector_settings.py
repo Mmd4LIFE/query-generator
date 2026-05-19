@@ -33,9 +33,9 @@ from app.core.settings_service import (
 )
 from app.deps.auth import (
     SectorContext,
-    current_sector,
-    require_sector_colonel,
     User,
+    get_current_active_user,
+    require_sector_colonel,
 )
 from app.deps.db import get_db
 
@@ -89,9 +89,8 @@ def _enrich(items: List[Dict[str, Any]]) -> List[SectorSettingItem]:
 @router.get("", response_model=List[SectorSettingItem])
 async def list_sector_settings(
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_colonel),
 ):
     """List every registered setting with this Sector's effective value
     and source (sector / global / default)."""
@@ -103,9 +102,8 @@ async def list_sector_settings(
 async def get_sector_setting(
     key: str,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_colonel),
 ):
     spec = get_spec(key)
     if not spec:
@@ -122,9 +120,9 @@ async def update_sector_setting(
     key: str,
     body: SectorSettingUpdate,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_colonel),
+    actor: User = Depends(get_current_active_user),
 ):
     """Set or update a Sector override for `key`."""
     spec = get_spec(key)
@@ -174,9 +172,9 @@ async def update_sector_setting(
 async def reset_sector_setting(
     key: str,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_colonel),
+    actor: User = Depends(get_current_active_user),
 ):
     """Delete this Sector's override row; the global (or default) value applies again."""
     spec = get_spec(key)

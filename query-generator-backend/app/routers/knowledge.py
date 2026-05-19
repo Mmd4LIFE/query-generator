@@ -42,11 +42,11 @@ from app.core.embeddings import (
 )
 from app.deps.auth import (
     SectorContext,
-    current_sector,
+    User,
+    get_current_active_user,
     require_sector_captain,
     require_sector_colonel,
     require_sector_soldier,
-    User,
 )
 from app.deps.db import get_db
 from app.models.catalog import Catalog
@@ -193,9 +193,9 @@ async def _approve_or_reject_row(
 async def create_note(
     body: NoteCreate,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_captain),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_captain),
+    actor: User = Depends(get_current_active_user),
 ):
     """Create a pending note. Approval is a separate Colonel+ step."""
     sector_id = sector.sector.id
@@ -232,9 +232,8 @@ async def create_note(
 @router.get("/notes", response_model=List[NoteSchema])
 async def list_notes(
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_soldier),
     status_filter: Optional[str] = Query(default=None, alias="status"),
     catalog_id: Optional[uuid.UUID] = None,
     limit: int = Query(default=50, ge=1, le=200),
@@ -255,9 +254,8 @@ async def list_notes(
 async def get_note(
     note_id: uuid.UUID,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_soldier),
 ):
     row = (await db.execute(
         select(Note).where(
@@ -274,9 +272,9 @@ async def approve_note(
     note_id: uuid.UUID,
     body: ApprovalRequest,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_colonel),
+    actor: User = Depends(get_current_active_user),
 ):
     note = (await db.execute(
         select(Note).where(
@@ -307,9 +305,9 @@ async def approve_note(
 async def create_metric(
     body: MetricCreate,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_captain),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_captain),
+    actor: User = Depends(get_current_active_user),
 ):
     sector_id = sector.sector.id
     await _check_catalog_in_sector(
@@ -348,9 +346,8 @@ async def create_metric(
 @router.get("/metrics", response_model=List[MetricSchema])
 async def list_metrics(
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_soldier),
     status_filter: Optional[str] = Query(default=None, alias="status"),
     catalog_id: Optional[uuid.UUID] = None,
     engine: Optional[str] = None,
@@ -374,9 +371,8 @@ async def list_metrics(
 async def get_metric(
     metric_id: uuid.UUID,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_soldier),
 ):
     row = (await db.execute(
         select(Metric).where(
@@ -393,9 +389,9 @@ async def approve_metric(
     metric_id: uuid.UUID,
     body: ApprovalRequest,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_colonel),
+    actor: User = Depends(get_current_active_user),
 ):
     metric = (await db.execute(
         select(Metric).where(
@@ -426,9 +422,9 @@ async def approve_metric(
 async def create_example(
     body: ExampleCreate,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_captain),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_captain),
+    actor: User = Depends(get_current_active_user),
 ):
     sector_id = sector.sector.id
     await _check_catalog_in_sector(
@@ -467,9 +463,8 @@ async def create_example(
 @router.get("/examples", response_model=List[ExampleSchema])
 async def list_examples(
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_soldier),
     status_filter: Optional[str] = Query(default=None, alias="status"),
     catalog_id: Optional[uuid.UUID] = None,
     engine: Optional[str] = None,
@@ -493,9 +488,8 @@ async def list_examples(
 async def get_example(
     example_id: uuid.UUID,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_soldier),
 ):
     row = (await db.execute(
         select(Example).where(
@@ -512,9 +506,9 @@ async def approve_example(
     example_id: uuid.UUID,
     body: ApprovalRequest,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_colonel),
+    actor: User = Depends(get_current_active_user),
 ):
     example = (await db.execute(
         select(Example).where(

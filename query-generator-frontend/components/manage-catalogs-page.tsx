@@ -43,10 +43,11 @@ import {
   Shield
 } from "lucide-react"
 import { QueryGeneratorAPI } from "@/lib/api"
-import { 
-  DATABASE_ENGINES, 
-  parseColumnsCSV, 
-  convertColumnsToCatalogJSON, 
+import type { Sector } from "@/lib/api"
+import {
+  DATABASE_ENGINES,
+  parseColumnsCSV,
+  convertColumnsToCatalogJSON,
   generateSampleCSV,
   validateColumnsCSV,
   getDatabaseLogo,
@@ -88,12 +89,32 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
   // Policy dialog state
   const [isPolicyDialogOpen, setIsPolicyDialogOpen] = useState(false)
   const [selectedPolicyCatalog, setSelectedPolicyCatalog] = useState<any | null>(null)
-  
+
+  // Sector picker for catalog import. Generals can route the import into
+  // any Sector; everyone else implicitly uses their current Sector.
+  const isGeneral = api.getCachedIsGeneral()
+  const [sectorOptions, setSectorOptions] = useState<Sector[]>([])
+  const [targetSectorId, setTargetSectorId] = useState<string>(
+    api.getCurrentSector() ?? "",
+  )
+
   // File upload
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     loadCatalogs()
+    // Only Generals need a Sector dropdown; everyone else stays pinned to
+    // their current Sector.
+    if (isGeneral) {
+      api.listSectors().then(list => {
+        setSectorOptions(list.filter(s => s.is_active))
+      }).catch(err => {
+        console.error("Failed to load Sectors for catalog import:", err)
+      })
+    }
+    // Keep targetSectorId in sync with the header switcher when it changes.
+    setTargetSectorId(api.getCurrentSector() ?? "")
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const loadCatalogs = async () => {
@@ -240,14 +261,18 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
     setError("")
 
     try {
+      // Generals can route the import to any Sector; everyone else implicitly
+      // uses their current Sector. `sectorOverride === ""` → defer to client.
+      const sectorOverride = isGeneral && targetSectorId ? targetSectorId : undefined
+
       // Step 1: Create catalog
-      const createdCatalog = await api.createCatalog(previewJson)
+      const createdCatalog = await api.createCatalog(previewJson, sectorOverride)
       console.log("Created catalog:", catalogName, "ID:", createdCatalog.id)
-      
-      // Step 2: Reindex catalog to create embeddings
+
+      // Step 2: Reindex catalog to create embeddings (same Sector context).
       console.log("Reindexing catalog for AI embeddings...")
       try {
-        await api.reindexCatalog(createdCatalog.id, false)
+        await api.reindexCatalog(createdCatalog.id, false, sectorOverride)
         console.log("Catalog reindexed successfully")
       } catch (reindexError) {
         console.warn("Catalog created but reindexing failed:", reindexError)
@@ -481,6 +506,45 @@ export function ManageCatalogsPage({ api, userPermissions }: ManageCatalogsPageP
                     <CardTitle className="text-lg">Step 1: Basic Information</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
+                    {/* Sector picker — General only. Captains/Colonels see a
+                        read-only badge so they know which Sector they're
+                        importing into. */}
+                    {isGeneral ? (
+                      <div className="space-y-2">
+                        <Label htmlFor="target-sector">Target Sector</Label>
+                        <Select
+                          value={targetSectorId || undefined}
+                          onValueChange={setTargetSectorId}
+                        >
+                          <SelectTrigger id="target-sector">
+                            <SelectValue placeholder="Pick a Sector" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {sectorOptions.map((s) => (
+                              <SelectItem key={s.id} value={s.id}>
+                                {s.name}{" "}
+                                <span className="text-muted-foreground text-xs">({s.code})</span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">
+                          As a General you can import into any Sector. The header
+                          switcher is unchanged after the import.
+                        </p>
+                      </div>
+                    ) : (
+                      targetSectorId && (
+                        <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs flex items-center gap-2">
+                          <Shield className="h-3 w-3" />
+                          <span className="text-muted-foreground">Importing into:</span>
+                          <span className="font-medium">
+                            {sectorOptions.find((s) => s.id === targetSectorId)?.name ??
+                              targetSectorId.slice(0, 8) + "…"}
+                          </span>
+                        </div>
+                      )
+                    )}
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2">
                         <Label htmlFor="catalog-name">Catalog Name</Label>

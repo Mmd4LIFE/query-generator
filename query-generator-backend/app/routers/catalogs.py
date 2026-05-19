@@ -31,7 +31,7 @@ from app.core.audit import write_audit
 from app.core.embeddings import create_embeddings_for_catalog
 from app.deps.auth import (
     SectorContext,
-    current_sector,
+    get_current_active_user,
     require_sector_captain,
     require_sector_soldier,
     User,
@@ -143,9 +143,9 @@ async def _load_catalog(
 async def create_catalog(
     catalog_create: CatalogCreate,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_captain),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_captain),
+    actor: User = Depends(get_current_active_user),
 ):
     """Import a catalog snapshot into this Sector."""
     sector_id = sector.sector.id
@@ -254,9 +254,8 @@ async def create_catalog(
 @router.get("", response_model=List[CatalogSummary])
 async def list_catalogs(
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_soldier),
     include_inactive: bool = False,
 ):
     """List catalogs in this Sector."""
@@ -307,9 +306,8 @@ async def list_catalogs(
 async def get_catalog(
     catalog_id: uuid.UUID,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_soldier),
 ):
     return await _load_catalog(
         db, catalog_id=catalog_id, sector_id=sector.sector.id, with_objects=True
@@ -325,9 +323,9 @@ async def update_catalog(
     catalog_id: uuid.UUID,
     catalog_update: CatalogUpdate,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_captain),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_captain),
+    actor: User = Depends(get_current_active_user),
 ):
     catalog = await _load_catalog(
         db, catalog_id=catalog_id, sector_id=sector.sector.id, with_objects=False
@@ -373,9 +371,9 @@ async def reindex_catalog(
     catalog_id: uuid.UUID,
     reindex_request: CatalogReindexRequest,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_captain),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_captain),
+    actor: User = Depends(get_current_active_user),
 ):
     catalog = await _load_catalog(
         db, catalog_id=catalog_id, sector_id=sector.sector.id, with_objects=False

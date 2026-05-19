@@ -32,9 +32,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.deps.auth import (
     ROLE_PRIORITY,
     SectorContext,
-    current_sector,
-    require_sector_soldier,
     User,
+    get_current_active_user,
+    require_sector_soldier,
 )
 from app.deps.db import get_db
 from app.models.auth import User as UserModel
@@ -198,9 +198,9 @@ def _to_feedback(fb: QueryFeedback, username: Optional[str]) -> FeedbackResponse
 @router.get("", response_model=HistoryList)
 async def get_history(
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    caller: User = Depends(require_sector_soldier),
+    caller: User = Depends(get_current_active_user),
     catalog_id: Optional[uuid.UUID] = None,
     status_filter: Optional[str] = Query(default=None, alias="status"),
     scope: str = Query(
@@ -264,9 +264,9 @@ async def get_history(
 async def get_history_item(
     history_id: uuid.UUID,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    caller: User = Depends(require_sector_soldier),
+    caller: User = Depends(get_current_active_user),
 ) -> HistoryResponse:
     row = await _fetch_history_for_caller(
         db,
@@ -293,9 +293,9 @@ async def create_feedback(
     history_id: uuid.UUID,
     body: FeedbackCreate,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    caller: User = Depends(require_sector_soldier),
+    caller: User = Depends(get_current_active_user),
 ) -> FeedbackResponse:
     """Create or update feedback. Must be the row owner — Colonels review
     via the corrections queue, not by leaving their own feedback."""
@@ -365,9 +365,9 @@ async def create_feedback(
 async def get_own_feedback(
     history_id: uuid.UUID,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    caller: User = Depends(require_sector_soldier),
+    caller: User = Depends(get_current_active_user),
 ) -> FeedbackResponse:
     # Confirm the row exists & is in scope; ownership enforced on the feedback row.
     await _fetch_history_for_caller(
@@ -395,9 +395,9 @@ async def get_own_feedback(
 async def get_all_feedback(
     history_id: uuid.UUID,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    caller: User = Depends(require_sector_soldier),
+    caller: User = Depends(get_current_active_user),
 ) -> List[FeedbackResponse]:
     """List every feedback row on a history item. Colonel+ only — Soldier/
     Captain can only see their own via `GET /feedback`."""

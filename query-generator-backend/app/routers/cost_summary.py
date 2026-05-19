@@ -28,10 +28,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps.auth import (
     SectorContext,
-    current_sector,
+    User,
     require_general,
     require_sector_colonel,
-    User,
 )
 from app.deps.db import get_db
 from app.models.auth import User as UserModel
@@ -251,9 +250,8 @@ async def _grouped(
 @router.get("/sectors/{sector_id}/cost-summary", response_model=CostSummary)
 async def sector_cost_summary(
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_colonel),
     from_date: Optional[date] = Query(default=None, alias="from"),
     to_date: Optional[date] = Query(default=None, alias="to"),
     group_by: GroupBy = Query(default="day"),

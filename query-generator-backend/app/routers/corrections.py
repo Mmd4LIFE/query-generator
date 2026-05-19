@@ -40,10 +40,10 @@ from app.core.audit import write_audit
 from app.core.embeddings import delete_embeddings_for_row, embed_one_knowledge_row
 from app.deps.auth import (
     SectorContext,
-    current_sector,
+    User,
+    get_current_active_user,
     require_sector_colonel,
     require_sector_soldier,
-    User,
 )
 from app.deps.db import get_db
 from app.models.auth import User as UserModel
@@ -164,13 +164,12 @@ def _to_out(c: Correction, *, by_user: Optional[str], approved_user: Optional[st
 @router.get("", response_model=CorrectionList)
 async def list_corrections(
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
     status_filter: Optional[str] = None,
     catalog_id: Optional[uuid.UUID] = None,
     limit: int = 50,
     offset: int = 0,
-    _: User = Depends(require_sector_soldier),
 ) -> CorrectionList:
     """List corrections in this Sector. Soldiers see all states for
     transparency; only Colonel+ can approve/reject."""
@@ -216,9 +215,8 @@ async def list_corrections(
 async def get_correction(
     correction_id: uuid.UUID,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_sector_soldier),
 ) -> CorrectionOut:
     row = (await db.execute(
         select(Correction).where(
@@ -244,9 +242,9 @@ async def get_correction(
 async def approve_correction(
     correction_id: uuid.UUID,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_colonel),
+    actor: User = Depends(get_current_active_user),
 ) -> CorrectionOut:
     """Approve a pending correction and embed it.
 
@@ -322,9 +320,9 @@ async def reject_correction(
     correction_id: uuid.UUID,
     body: RejectRequest,
     *,
-    sector: SectorContext = Depends(current_sector),
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_sector_colonel),
+    actor: User = Depends(get_current_active_user),
 ) -> CorrectionOut:
     """Reject a pending correction. Any prior embedding (shouldn't exist on
     a pending row, but defensive) is also removed."""

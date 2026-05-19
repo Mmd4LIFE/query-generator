@@ -434,6 +434,54 @@ Phases are ordered by dependency. Do not start phase N+1 until phase N has shipp
   SSE consumer.
 - 🔲 SQL syntax highlighting, Cmd+Enter, empty states.
 
+### Critical bug fix — SectorContext mistyped as User in every Phase-2 router
+
+The "why can't the General insert a catalog?" symptom traced to a
+copy-paste pattern I introduced across the Phase-2 router refactors:
+
+```python
+# WRONG — what shipped
+sector: SectorContext = Depends(current_sector),
+actor: User = Depends(require_sector_captain),
+```
+
+`require_sector_captain` returns a `SectorContext`, not a `User`. FastAPI
+binds whatever the dependency returns; the `User` annotation is a
+documentation lie. The first time the handler touched `actor.id` (or
+`actor.username`, or `caller.id`) it raised
+`AttributeError: 'SectorContext' object has no attribute 'id'`. The
+General hit it on `POST /v1/sectors/{sid}/catalogs`; every other
+sector-scoped write would have hit the same trap.
+
+30+ call sites across 7 routers were fixed to the new canonical pattern:
+
+```python
+# RIGHT
+sector: SectorContext = Depends(require_sector_X),    # gates + ctx
+actor:  User          = Depends(get_current_active_user),  # user
+```
+
+- `current_sector` is no longer imported by handlers that have a tier
+  gate — the gate already calls it.
+- Mass-rewrite covered: `catalogs`, `knowledge`, `corrections`,
+  `policies`, `history`, `sector_settings`, `cost_summary`.
+- AST cross-ref shows 0 unresolved imports across the whole `app/`.
+
+### Frontend — catalog import sector picker (General)
+
+Previously the catalog create dialog implicitly imported into the active
+Sector (the one in the header switcher). For a General juggling multiple
+Sectors this meant a sector-switch trip before every catalog import.
+
+[components/manage-catalogs-page.tsx](query-generator-frontend/components/manage-catalogs-page.tsx)
+now reads `api.getCachedIsGeneral()` and renders a **Target Sector**
+dropdown inside Step 1 when the caller is a General; everyone else sees
+a read-only "Importing into: <Sector name>" line so they know where the
+import will land. Submission threads the chosen sector through to
+[api-client.ts](query-generator-frontend/lib/api-client.ts) which now
+accepts an optional `sectorIdOverride` on `createCatalog` and
+`reindexCatalog`, leaving the header switcher untouched.
+
 ### Migration UUID-bind bug (fixed)
 
 The Phase-1 migration's three `sa.text(...).bindparams(...)` sites bound
