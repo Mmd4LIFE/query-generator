@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -11,88 +11,170 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { Users, Plus, Edit, Trash2, AlertCircle, UserCheck, UserX } from "lucide-react"
-import type { QueryGeneratorAPI } from "@/lib/api"
+import {
+  Users,
+  Plus,
+  Edit,
+  Trash2,
+  AlertCircle,
+  UserCheck,
+  UserX,
+  Shield,
+  ShieldCheck,
+  Loader2,
+} from "lucide-react"
+import type { QueryGeneratorAPI, Sector } from "@/lib/api"
 
 interface UserSettingsPageProps {
   api: QueryGeneratorAPI
 }
 
-export function UserSettingsPage({ api }: UserSettingsPageProps) {
-  const [users, setUsers] = useState<any[]>([])
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState("")
-  const [isDialogOpen, setIsDialogOpen] = useState(false)
-  const [editingUser, setEditingUser] = useState<any>(null)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  // user_id → aggregate over dq_history.cost_usd. Keyed lookup so the table
-  // renders in one pass; users with no history simply show $0.0000.
-  const [costByUser, setCostByUser] = useState<
-    Record<string, { total_cost_usd: number; total_queries: number; total_tokens: number }>
-  >({})
+// ---------------------------------------------------------------------------
+// Types — narrower than UserProfile because we know the backend shape.
+// ---------------------------------------------------------------------------
 
-  // Helper function to get user's primary role (highest priority)
-  const getUserRole = (user: any): string => {
-    try {
-      if (user.roles && Array.isArray(user.roles) && user.roles.length > 0) {
-        // Extract role names from objects
-        const roleNames = user.roles.map((role: any) => 
-          typeof role === 'string' ? role : role.role_name || String(role)
-        )
-        
-        // Define role priority (highest to lowest)
-        const rolePriority: Record<string, number> = {
-          admin: 100,
-          administrator: 95,
-          super_admin: 95,
-          data_guy: 50,
-          data_analyst: 45,
-          catalog_manager: 40,
-          user: 10,
-          viewer: 5
-        }
-        
-        // Return highest priority role
-        const sortedRoles = roleNames.sort((a: string, b: string) => {
-          const priorityA = rolePriority[a.toLowerCase()] || 0
-          const priorityB = rolePriority[b.toLowerCase()] || 0
-          return priorityB - priorityA
-        })
-        
-        return sortedRoles[0]
-      }
-      return user.role || 'user' // Fallback to single role or default
-    } catch (error) {
-      console.error('Error getting user role:', error, 'for user:', user)
-      return 'user'
-    }
-  }
-  const [formData, setFormData] = useState({
+type SectorRoleName = "colonel" | "captain" | "soldier"
+
+interface BackendRole {
+  /** UserRole row id (used for deletes when applicable). */
+  id?: string
+  role_name: "general" | SectorRoleName | string
+  /** NULL for General; required otherwise. */
+  sector_id: string | null
+}
+
+interface UserRow {
+  id: string
+  username: string
+  email: string
+  full_name?: string | null
+  is_active: boolean
+  created_at: string
+  last_login?: string | null
+  roles: BackendRole[]
+}
+
+interface CostStat {
+  total_cost_usd: number
+  total_queries: number
+  total_tokens: number
+}
+
+const ROLE_LABEL: Record<string, string> = {
+  general: "General",
+  colonel: "Colonel",
+  captain: "Captain",
+  soldier: "Soldier",
+}
+
+// ---------------------------------------------------------------------------
+
+export function UserSettingsPage({ api }: UserSettingsPageProps) {
+  const [users, setUsers] = useState<UserRow[]>([])
+  const [sectors, setSectors] = useState<Sector[]>([])
+  const [costByUser, setCostByUser] = useState<Record<string, CostStat>>({})
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string>("")
+
+  // Create dialog
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createDraft, setCreateDraft] = useState({
     username: "",
     full_name: "",
     email: "",
-    role: "user",
-    is_active: true,
     password: "",
+    is_active: true,
   })
+  const [createSaving, setCreateSaving] = useState(false)
 
-  useEffect(() => {
-    loadUsers()
-    loadCostSummary()
-  }, [])
+  // Edit details dialog
+  const [editTarget, setEditTarget] = useState<UserRow | null>(null)
+  const [editDraft, setEditDraft] = useState({
+    full_name: "",
+    email: "",
+    password: "",
+    is_active: true,
+  })
+  const [editSaving, setEditSaving] = useState(false)
 
-  const loadCostSummary = async () => {
-    // Fire-and-log: cost table is informational, never block the page on it.
+  // Manage roles dialog
+  const [rolesTarget, setRolesTarget] = useState<UserRow | null>(null)
+  const [rolesSaving, setRolesSaving] = useState<string>("")  // sectorId or 'general'
+  const [rolesError, setRolesError] = useState<string>("")
+  // Inline assign-to-new-sector form state.
+  const [assignSectorId, setAssignSectorId] = useState<string>("")
+  const [assignRole, setAssignRole] = useState<SectorRoleName>("soldier")
+
+  // Delete confirm
+  const [deleteTarget, setDeleteTarget] = useState<UserRow | null>(null)
+
+  // ---- Loaders ----------------------------------------------------------
+
+  const loadUsers = async () => {
+    const list = await api.getUsers()
+    setUsers(
+      (Array.isArray(list) ? list : []).map((u: any) => ({
+        id: u.id,
+        username: u.username,
+        email: u.email,
+        full_name: u.full_name,
+        is_active: u.is_active,
+        created_at: u.created_at,
+        last_login: u.last_login,
+        roles: Array.isArray(u.roles)
+          ? u.roles.map((r: any) => ({
+              id: r.id,
+              role_name: typeof r === "string" ? r : r.role_name,
+              sector_id: typeof r === "string" ? null : (r.sector_id ?? null),
+            }))
+          : [],
+      })),
+    )
+  }
+
+  const loadSectors = async () => {
+    try {
+      const list = await api.listSectors()
+      setSectors(list)
+    } catch (e) {
+      console.error("Failed to load sectors", e)
+    }
+  }
+
+  const loadCosts = async () => {
     try {
       const rows = await api.getUsersCostSummary()
-      const map: Record<string, { total_cost_usd: number; total_queries: number; total_tokens: number }> = {}
+      const map: Record<string, CostStat> = {}
       for (const r of rows) {
         map[r.user_id] = {
           total_cost_usd: r.total_cost_usd,
@@ -102,439 +184,723 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
       }
       setCostByUser(map)
     } catch (e) {
-      console.error('Failed to load user cost summary:', e)
+      // Informational — never block the page.
+      console.error("Failed to load user cost summary:", e)
     }
   }
 
-  const loadUsers = async () => {
-    setIsLoading(true)
-    setError("")
-    try {
-      const usersData = await api.getUsers()
-      console.log('Raw API response:', JSON.stringify(usersData, null, 2))
-      
-      // Transform the data if needed
-      const transformedUsers = Array.isArray(usersData) ? usersData.map((user: any) => {
-        const transformedUser = {
-          ...user,
-          // Ensure roles is always an array of strings, not objects
-          roles: user.roles ? user.roles.map((role: any) => {
-            if (typeof role === 'string') {
-              return role
-            } else if (role && typeof role === 'object') {
-              return role.role_name || role.name || 'unknown'
-            } else {
-              return String(role)
-            }
-          }) : []
-        }
-        console.log('Transformed user:', user.username, 'from roles:', user.roles, 'to roles:', transformedUser.roles)
-        return transformedUser
-      }) : []
-      
-      console.log('Transformed users:', transformedUsers)
-      setUsers(transformedUsers)
-    } catch (err: any) {
-      console.error('Failed to load users:', err)
-      
-      // Parse different types of API errors
-      let errorMessage = "Failed to load users"
-      if (err.response && err.response.data && err.response.data.detail) {
-        if (typeof err.response.data.detail === 'string') {
-          errorMessage = err.response.data.detail
-        } else if (Array.isArray(err.response.data.detail)) {
-          errorMessage = err.response.data.detail.map((item: any) => 
-            item.msg || item.message || JSON.stringify(item)
-          ).join(', ')
-        }
-      } else if (err.message && typeof err.message === 'string') {
-        errorMessage = err.message
-      }
-      
-      setError(errorMessage)
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleSubmit = async () => {
-    setIsSubmitting(true)
-    setError("")
-    try {
-      if (editingUser) {
-        // Update existing user (excluding role)
-        const { role, ...userUpdateData } = formData
-        await api.updateUser(editingUser.id, userUpdateData)
-        console.log("Updated user:", userUpdateData)
-        
-        // Handle role assignment separately if role changed
-        const currentRole = getUserRole(editingUser)
-        if (role && role !== currentRole) {
-          console.log("Role changed from", currentRole, "to", role)
-          
-          // Backend now handles single role assignment automatically
-          // Just assign the new role - backend will soft-delete old ones
-          await api.assignUserRole(editingUser.id, role)
-          console.log("Successfully assigned new role:", role)
-        }
-      } else {
-        // Create new user (excluding role from user data)
-        const { role, ...userCreateData } = formData
-        const newUser = await api.createUser(userCreateData)
-        console.log("Created user:", newUser)
-        
-        // Assign role if specified (backend handles single role automatically)
-        if (role) {
-          const userId = newUser.id || (newUser as any).user_id || newUser.username
-          console.log("Assigning role", role, "to user ID:", userId)
-          await api.assignUserRole(userId, role)
-          console.log("Assigned role to new user:", role)
-        }
-      }
-      setIsDialogOpen(false)
-      resetForm()
-      await loadUsers()
-    } catch (err: any) {
-      console.error('Failed to save user:', err)
-      
-      // Parse different types of API errors
-      let errorMessage = "Failed to save user"
-      
-      if (err.response && err.response.data) {
-        // Axios error with response data
-        const responseData = err.response.data
-        if (typeof responseData === 'string') {
-          errorMessage = responseData
-        } else if (responseData.detail) {
-          if (Array.isArray(responseData.detail)) {
-            // Validation errors array
-            errorMessage = responseData.detail.map((item: any) => 
-              item.msg || item.message || JSON.stringify(item)
-            ).join(', ')
-          } else if (typeof responseData.detail === 'string') {
-            errorMessage = responseData.detail
-          } else {
-            errorMessage = JSON.stringify(responseData.detail)
-          }
-        } else if (responseData.message) {
-          errorMessage = responseData.message
-        }
-      } else if (err.message && typeof err.message === 'string') {
-        errorMessage = err.message
-      } else if (typeof err === 'string') {
-        errorMessage = err
-      }
-      
-      setError(errorMessage)
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
-  const resetForm = () => {
-    setFormData({
-      username: "",
-      full_name: "",
-      email: "",
-      role: "user",
-      is_active: true,
-      password: "",
-    })
-    setEditingUser(null)
-  }
-
-  const handleEdit = (user: any) => {
-    setEditingUser(user)
-    setFormData({
-      username: user.username,
-      full_name: user.full_name || "",
-      email: user.email,
-      role: getUserRole(user),
-      is_active: user.is_active,
-      password: "",
-    })
-    setIsDialogOpen(true)
-  }
-
-  const handleToggleActive = async (userId: string, isActive: boolean) => {
-    try {
-      await api.toggleUserStatus(userId, isActive)
-      console.log("Toggled user active status:", userId, isActive)
-      await loadUsers()
-    } catch (err: any) {
-      console.error('Failed to update user status:', err)
-      
-      let errorMessage = "Failed to update user status"
-      if (err.response && err.response.data && err.response.data.detail) {
-        if (typeof err.response.data.detail === 'string') {
-          errorMessage = err.response.data.detail
-        } else if (Array.isArray(err.response.data.detail)) {
-          errorMessage = err.response.data.detail.map((item: any) => 
-            item.msg || item.message || JSON.stringify(item)
-          ).join(', ')
-        }
-      } else if (err.message && typeof err.message === 'string') {
-        errorMessage = err.message
-      }
-      
-      setError(errorMessage)
-    }
-  }
-
-  const handleDelete = async (userId: string) => {
-    if (confirm("Are you sure you want to delete this user? This action cannot be undone.")) {
+  useEffect(() => {
+    ;(async () => {
+      setIsLoading(true)
       try {
-        await api.deleteUser(userId)
-        console.log("Deleted user:", userId)
-        await loadUsers()
-      } catch (err: any) {
-        console.error('Failed to delete user:', err)
-        
-        let errorMessage = "Failed to delete user"
-        if (err.response && err.response.data && err.response.data.detail) {
-          if (typeof err.response.data.detail === 'string') {
-            errorMessage = err.response.data.detail
-          } else if (Array.isArray(err.response.data.detail)) {
-            errorMessage = err.response.data.detail.map((item: any) => 
-              item.msg || item.message || JSON.stringify(item)
-            ).join(', ')
-          }
-        } else if (err.message && typeof err.message === 'string') {
-          errorMessage = err.message
-        }
-        
-        setError(errorMessage)
+        await Promise.all([loadUsers(), loadSectors(), loadCosts()])
+      } catch (e: any) {
+        setError(e?.message ?? "Failed to load users")
+      } finally {
+        setIsLoading(false)
       }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // ---- Derived ----------------------------------------------------------
+
+  const sectorById = useMemo(() => {
+    const m: Record<string, Sector> = {}
+    for (const s of sectors) m[s.id] = s
+    return m
+  }, [sectors])
+
+  const isGeneral = (u: UserRow) => u.roles.some((r) => r.role_name === "general")
+
+  const sectorRoles = (u: UserRow): Array<{ sector_id: string; role: SectorRoleName }> =>
+    u.roles
+      .filter((r) => r.role_name !== "general" && r.sector_id)
+      .map((r) => ({
+        sector_id: r.sector_id as string,
+        role: r.role_name as SectorRoleName,
+      }))
+
+  // ---- Mutations: details -----------------------------------------------
+
+  const submitCreate = async () => {
+    setCreateSaving(true)
+    setError("")
+    try {
+      await api.createUser(createDraft)
+      setCreateOpen(false)
+      setCreateDraft({ username: "", full_name: "", email: "", password: "", is_active: true })
+      await loadUsers()
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to create user")
+    } finally {
+      setCreateSaving(false)
     }
   }
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString()
+  const submitEdit = async () => {
+    if (!editTarget) return
+    setEditSaving(true)
+    setError("")
+    try {
+      // Only send the changed fields. Empty password = "keep current".
+      const patch: any = {
+        full_name: editDraft.full_name,
+        email: editDraft.email,
+        is_active: editDraft.is_active,
+      }
+      if (editDraft.password.trim()) patch.password = editDraft.password
+      await api.updateUser(editTarget.id, patch)
+      setEditTarget(null)
+      await loadUsers()
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to update user")
+    } finally {
+      setEditSaving(false)
+    }
   }
+
+  const submitDelete = async () => {
+    if (!deleteTarget) return
+    try {
+      await api.deleteUser(deleteTarget.id)
+      setDeleteTarget(null)
+      await loadUsers()
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to delete user")
+    }
+  }
+
+  const submitToggleActive = async (u: UserRow) => {
+    try {
+      await api.toggleUserStatus(u.id, !u.is_active)
+      await loadUsers()
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to update status")
+    }
+  }
+
+  // ---- Mutations: roles -------------------------------------------------
+
+  const toggleGeneral = async (u: UserRow, makeGeneral: boolean) => {
+    setRolesSaving("general")
+    setRolesError("")
+    try {
+      if (makeGeneral) {
+        await api.promoteToGeneral(u.id)
+      } else {
+        await api.revokeGeneral(u.id)
+      }
+      // Reload both the user list and the dialog target.
+      await loadUsers()
+      // Sync rolesTarget with the new data.
+      const fresh = (await api.getUsers()).find((x: any) => x.id === u.id)
+      if (fresh) {
+        setRolesTarget({
+          ...u,
+          roles: Array.isArray(fresh.roles)
+            ? fresh.roles.map((r: any) => ({
+                id: r.id,
+                role_name: typeof r === "string" ? r : r.role_name,
+                sector_id: typeof r === "string" ? null : (r.sector_id ?? null),
+              }))
+            : [],
+        })
+      }
+    } catch (e: any) {
+      setRolesError(e?.message ?? "Failed to update General status")
+    } finally {
+      setRolesSaving("")
+    }
+  }
+
+  const assignSectorRole = async (
+    u: UserRow,
+    sectorId: string,
+    role: SectorRoleName,
+  ) => {
+    setRolesSaving(sectorId)
+    setRolesError("")
+    try {
+      await api.assignUserRole(u.id, role, sectorId)
+      await loadUsers()
+      const fresh = (await api.getUsers()).find((x: any) => x.id === u.id)
+      if (fresh) {
+        setRolesTarget({
+          ...u,
+          roles: Array.isArray(fresh.roles)
+            ? fresh.roles.map((r: any) => ({
+                id: r.id,
+                role_name: typeof r === "string" ? r : r.role_name,
+                sector_id: typeof r === "string" ? null : (r.sector_id ?? null),
+              }))
+            : [],
+        })
+      }
+      // Reset inline assign form if it was used.
+      setAssignSectorId("")
+      setAssignRole("soldier")
+    } catch (e: any) {
+      setRolesError(e?.message ?? "Failed to assign role")
+    } finally {
+      setRolesSaving("")
+    }
+  }
+
+  const removeSectorRole = async (u: UserRow, sectorId: string) => {
+    setRolesSaving(sectorId)
+    setRolesError("")
+    try {
+      await api.removeUserRole(u.id, sectorId)
+      await loadUsers()
+      const fresh = (await api.getUsers()).find((x: any) => x.id === u.id)
+      if (fresh) {
+        setRolesTarget({
+          ...u,
+          roles: Array.isArray(fresh.roles)
+            ? fresh.roles.map((r: any) => ({
+                id: r.id,
+                role_name: typeof r === "string" ? r : r.role_name,
+                sector_id: typeof r === "string" ? null : (r.sector_id ?? null),
+              }))
+            : [],
+        })
+      }
+    } catch (e: any) {
+      setRolesError(e?.message ?? "Failed to remove role")
+    } finally {
+      setRolesSaving("")
+    }
+  }
+
+  // ---- Helpers ----------------------------------------------------------
+
+  const formatDate = (s?: string | null) => (s ? new Date(s).toLocaleDateString() : "—")
+
+  // ---- Render -----------------------------------------------------------
 
   return (
-    <div className="container mx-auto px-6 py-8">
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-foreground">User Management</h1>
-            <p className="text-muted-foreground">Manage user accounts and access permissions</p>
-          </div>
-          <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-            <DialogTrigger asChild>
-              <Button onClick={resetForm}>
-                <Plus className="mr-2 h-4 w-4" />
-                Add User
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-[500px]">
-              <DialogHeader>
-                <DialogTitle>{editingUser ? "Edit User" : "Add New User"}</DialogTitle>
-                <DialogDescription>Configure user account and permissions</DialogDescription>
-              </DialogHeader>
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="username">Username</Label>
-                  <Input
-                    id="username"
-                    value={formData.username}
-                    onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                    placeholder="Enter username"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="full_name">Full Name</Label>
-                  <Input
-                    id="full_name"
-                    value={formData.full_name}
-                    onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
-                    placeholder="Enter full name"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    value={formData.email}
-                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    placeholder="user@company.com"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="role">Role</Label>
-                  <Select value={formData.role} onValueChange={(value) => setFormData({ ...formData, role: value })}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="user">User</SelectItem>
-                      <SelectItem value="data_guy">Data Analyst</SelectItem>
-                      <SelectItem value="admin">Admin</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                {!editingUser && (
-                  <div className="space-y-2">
-                    <Label htmlFor="password">Password</Label>
-                    <Input
-                      id="password"
-                      type="password"
-                      value={formData.password}
-                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                      placeholder="Enter password"
-                    />
-                  </div>
-                )}
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>Active Account</Label>
-                    <p className="text-sm text-muted-foreground">User can log in and access the system</p>
-                  </div>
-                  <Switch
-                    checked={formData.is_active}
-                    onCheckedChange={(checked) => setFormData({ ...formData, is_active: checked })}
-                  />
-                </div>
-                <div className="flex justify-end space-x-2">
-                  <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
-                    Cancel
-                  </Button>
-                  <Button onClick={handleSubmit} disabled={isSubmitting}>
-                    {isSubmitting ? "Processing..." : editingUser ? "Update User" : "Create User"}
-                  </Button>
-                </div>
-              </div>
-            </DialogContent>
-          </Dialog>
+    <div className="p-6 space-y-6 overflow-auto max-h-[calc(100vh-4rem)]">
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <Users className="h-6 w-6" />
+            User Management
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Create accounts, manage cross-Sector General status, and assign
+            Colonel / Captain / Soldier roles per Sector.
+          </p>
         </div>
+        <Button onClick={() => setCreateOpen(true)}>
+          <Plus className="mr-2 h-4 w-4" />
+          Add User
+        </Button>
+      </div>
 
-        {error && (
-          <Alert variant="destructive">
-            <AlertCircle className="h-4 w-4" />
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <Users className="w-5 h-5" />
-              <span>System Users</span>
-            </CardTitle>
-            <CardDescription>Manage user accounts and permissions</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {isLoading ? (
-              <div className="text-center py-8">Loading users...</div>
-            ) : users.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">No users found.</div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Username</TableHead>
-                    <TableHead>Full Name</TableHead>
-                    <TableHead>Email</TableHead>
-                    <TableHead>Role</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Last Login</TableHead>
-                    <TableHead>Created</TableHead>
-                    <TableHead className="text-right">Cost (USD)</TableHead>
-                    <TableHead>Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {users.map((user) => {
-                    try {
-                      return (
-                        <TableRow key={user.id}>
-                          <TableCell className="font-medium">{user.username || 'N/A'}</TableCell>
-                          <TableCell>{user.full_name || 'N/A'}</TableCell>
-                          <TableCell>{user.email || 'N/A'}</TableCell>
-                          <TableCell>
-                            <Badge variant={getUserRole(user) === "admin" ? "default" : "secondary"}>
-                              {getUserRole(user)}
-                            </Badge>
-                          </TableCell>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Users className="w-4 h-4" />
+            System Users ({users.length})
+          </CardTitle>
+          <CardDescription>
+            Each user holds at most one role per Sector. Generals carry the
+            cross-Sector role and have no Sector-scoped row.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : users.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">No users found.</div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>User</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Roles</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Last Login</TableHead>
+                  <TableHead className="text-right">Cost (USD)</TableHead>
+                  <TableHead className="w-[180px]">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {users.map((u) => {
+                  const general = isGeneral(u)
+                  const sRoles = sectorRoles(u)
+                  const cost = costByUser[u.id]
+                  return (
+                    <TableRow key={u.id}>
+                      <TableCell className="font-medium">
+                        {u.full_name || u.username}
+                        <div className="text-xs text-muted-foreground">@{u.username}</div>
+                      </TableCell>
+                      <TableCell className="text-sm">{u.email}</TableCell>
                       <TableCell>
-                        <div className="flex items-center space-x-1">
-                          {user.is_active ? (
-                            <>
-                              <UserCheck className="w-4 h-4 text-green-500" />
-                              <span className="text-sm">Active</span>
-                            </>
-                          ) : (
-                            <>
-                              <UserX className="w-4 h-4 text-red-500" />
-                              <span className="text-sm">Inactive</span>
-                            </>
+                        <div className="flex flex-wrap gap-1">
+                          {general && (
+                            <Badge className="gap-1">
+                              <ShieldCheck className="h-3 w-3" />
+                              General
+                            </Badge>
                           )}
+                          {sRoles.length === 0 && !general && (
+                            <span className="text-xs text-muted-foreground">No role</span>
+                          )}
+                          {sRoles.map((r) => {
+                            const sector = sectorById[r.sector_id]
+                            return (
+                              <Badge
+                                key={r.sector_id}
+                                variant="outline"
+                                className="gap-1"
+                              >
+                                <Shield className="h-3 w-3" />
+                                {ROLE_LABEL[r.role] ?? r.role}
+                                <span className="text-muted-foreground">
+                                  @ {sector?.code ?? r.sector_id.slice(0, 6)}
+                                </span>
+                              </Badge>
+                            )
+                          })}
                         </div>
                       </TableCell>
-                      <TableCell>{formatDate(user.last_login)}</TableCell>
-                      <TableCell>{formatDate(user.created_at)}</TableCell>
+                      <TableCell>
+                        {u.is_active ? (
+                          <span className="inline-flex items-center gap-1 text-sm">
+                            <UserCheck className="w-3.5 h-3.5 text-green-500" />
+                            Active
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-sm">
+                            <UserX className="w-3.5 h-3.5 text-red-500" />
+                            Inactive
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell>{formatDate(u.last_login)}</TableCell>
                       <TableCell className="text-right tabular-nums">
-                        {(() => {
-                          const c = costByUser[user.id]
-                          if (!c) return <span className="text-muted-foreground">$0.0000</span>
-                          return (
-                            <span
-                              title={`${c.total_queries.toLocaleString()} queries · ${c.total_tokens.toLocaleString()} tokens`}
-                            >
-                              ${c.total_cost_usd.toFixed(4)}
-                            </span>
-                          )
-                        })()}
+                        {cost ? (
+                          <span
+                            title={`${cost.total_queries.toLocaleString()} queries · ${cost.total_tokens.toLocaleString()} tokens`}
+                          >
+                            ${cost.total_cost_usd.toFixed(4)}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">$0.0000</span>
+                        )}
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center space-x-2">
+                        <div className="flex items-center gap-1">
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => handleEdit(user)}
-                            title="Edit user details"
+                            onClick={() => {
+                              setRolesTarget(u)
+                              setRolesError("")
+                              setAssignSectorId("")
+                              setAssignRole("soldier")
+                            }}
+                            title="Manage roles"
+                          >
+                            <Shield className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setEditTarget(u)
+                              setEditDraft({
+                                full_name: u.full_name ?? "",
+                                email: u.email,
+                                password: "",
+                                is_active: u.is_active,
+                              })
+                            }}
+                            title="Edit details"
                           >
                             <Edit className="w-4 h-4" />
                           </Button>
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => handleToggleActive(user.id, !user.is_active)}
-                            title={user.is_active ? "Deactivate user" : "Activate user"}
+                            onClick={() => submitToggleActive(u)}
+                            title={u.is_active ? "Deactivate" : "Activate"}
                           >
-                            {user.is_active ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
+                            {u.is_active ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
                           </Button>
-                          <Button 
-                            variant="ghost" 
-                            size="sm" 
-                            onClick={() => handleDelete(user.id)}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setDeleteTarget(u)}
                             title="Delete user"
                             className="text-red-600 hover:text-red-800"
                           >
                             <Trash2 className="w-4 h-4" />
                           </Button>
                         </div>
-                          </TableCell>
-                        </TableRow>
-                      )
-                    } catch (error) {
-                      console.error('Error rendering user row:', error, 'for user:', user)
-                      return (
-                        <TableRow key={user.id || Math.random()}>
-                          <TableCell colSpan={9} className="text-center text-red-500">
-                            Error displaying user: {user.username || 'Unknown'}
-                          </TableCell>
-                        </TableRow>
-                      )
-                    }
-                  })}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ---- Create user ---- */}
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add User</DialogTitle>
+            <DialogDescription>
+              Create an account first; assign roles separately via the shield
+              icon in the user row.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label htmlFor="c-username">Username</Label>
+              <Input
+                id="c-username"
+                value={createDraft.username}
+                onChange={(e) => setCreateDraft({ ...createDraft, username: e.target.value })}
+                placeholder="jdoe"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="c-fullname">Full name</Label>
+              <Input
+                id="c-fullname"
+                value={createDraft.full_name}
+                onChange={(e) => setCreateDraft({ ...createDraft, full_name: e.target.value })}
+                placeholder="Jane Doe"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="c-email">Email</Label>
+              <Input
+                id="c-email"
+                type="email"
+                value={createDraft.email}
+                onChange={(e) => setCreateDraft({ ...createDraft, email: e.target.value })}
+                placeholder="jane@company.com"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="c-password">Password</Label>
+              <Input
+                id="c-password"
+                type="password"
+                value={createDraft.password}
+                onChange={(e) => setCreateDraft({ ...createDraft, password: e.target.value })}
+              />
+            </div>
+            <div className="flex items-center justify-between rounded border p-3">
+              <div>
+                <Label htmlFor="c-active">Active</Label>
+                <p className="text-xs text-muted-foreground">
+                  Inactive users cannot log in.
+                </p>
+              </div>
+              <Switch
+                id="c-active"
+                checked={createDraft.is_active}
+                onCheckedChange={(c) => setCreateDraft({ ...createDraft, is_active: c })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
+            <Button
+              onClick={submitCreate}
+              disabled={
+                createSaving ||
+                !createDraft.username ||
+                !createDraft.email ||
+                !createDraft.password
+              }
+            >
+              {createSaving && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---- Edit user details ---- */}
+      <Dialog open={!!editTarget} onOpenChange={(open) => !open && setEditTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit user</DialogTitle>
+            <DialogDescription>
+              Username is immutable. To change roles, close this and click the
+              shield icon.
+            </DialogDescription>
+          </DialogHeader>
+          {editTarget && (
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <Label>Username</Label>
+                <Input value={editTarget.username} disabled />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="e-fullname">Full name</Label>
+                <Input
+                  id="e-fullname"
+                  value={editDraft.full_name}
+                  onChange={(e) => setEditDraft({ ...editDraft, full_name: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="e-email">Email</Label>
+                <Input
+                  id="e-email"
+                  type="email"
+                  value={editDraft.email}
+                  onChange={(e) => setEditDraft({ ...editDraft, email: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="e-password">Reset password (optional)</Label>
+                <Input
+                  id="e-password"
+                  type="password"
+                  placeholder="Leave blank to keep current"
+                  value={editDraft.password}
+                  onChange={(e) => setEditDraft({ ...editDraft, password: e.target.value })}
+                />
+              </div>
+              <div className="flex items-center justify-between rounded border p-3">
+                <div>
+                  <Label htmlFor="e-active">Active</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Inactive users cannot log in or hit any API.
+                  </p>
+                </div>
+                <Switch
+                  id="e-active"
+                  checked={editDraft.is_active}
+                  onCheckedChange={(c) => setEditDraft({ ...editDraft, is_active: c })}
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditTarget(null)}>Cancel</Button>
+            <Button onClick={submitEdit} disabled={editSaving}>
+              {editSaving && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---- Manage roles ---- */}
+      <Dialog open={!!rolesTarget} onOpenChange={(open) => !open && setRolesTarget(null)}>
+        <DialogContent className="sm:max-w-[640px]">
+          <DialogHeader>
+            <DialogTitle>
+              Manage roles
+              {rolesTarget && (
+                <span className="text-muted-foreground text-sm font-normal ml-2">
+                  · {rolesTarget.full_name || rolesTarget.username}
+                </span>
+              )}
+            </DialogTitle>
+            <DialogDescription>
+              A user holds at most one role per Sector. The General role is
+              cross-Sector and has no Sector membership row.
+            </DialogDescription>
+          </DialogHeader>
+          {rolesTarget && (
+            <div className="space-y-5">
+              {/* General toggle */}
+              <div className="flex items-start justify-between rounded border p-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4" />
+                    <Label className="text-sm">General (cross-Sector admin)</Label>
+                  </div>
+                  <p className="text-xs text-muted-foreground max-w-md">
+                    Grants full access to every Sector and the ability to
+                    create / archive Sectors. Use sparingly.
+                  </p>
+                </div>
+                <Switch
+                  checked={isGeneral(rolesTarget)}
+                  disabled={rolesSaving === "general"}
+                  onCheckedChange={(c) => toggleGeneral(rolesTarget, c)}
+                />
+              </div>
+
+              {/* Per-sector roles */}
+              <div>
+                <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
+                  <Shield className="h-4 w-4" />
+                  Sector roles
+                </h4>
+                {sectorRoles(rolesTarget).length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-2">
+                    Not a member of any Sector yet.
+                  </p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Sector</TableHead>
+                        <TableHead>Role</TableHead>
+                        <TableHead className="w-[80px]"></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {sectorRoles(rolesTarget).map((r) => {
+                        const s = sectorById[r.sector_id]
+                        const busy = rolesSaving === r.sector_id
+                        return (
+                          <TableRow key={r.sector_id}>
+                            <TableCell>
+                              {s?.name ?? "—"}
+                              <span className="text-muted-foreground text-xs ml-1">
+                                ({s?.code ?? r.sector_id.slice(0, 6)})
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              <Select
+                                value={r.role}
+                                disabled={busy}
+                                onValueChange={(v) =>
+                                  assignSectorRole(
+                                    rolesTarget,
+                                    r.sector_id,
+                                    v as SectorRoleName,
+                                  )
+                                }
+                              >
+                                <SelectTrigger className="h-8 w-[140px]">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="colonel">Colonel</SelectItem>
+                                  <SelectItem value="captain">Captain</SelectItem>
+                                  <SelectItem value="soldier">Soldier</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                disabled={busy}
+                                onClick={() => removeSectorRole(rolesTarget, r.sector_id)}
+                              >
+                                {busy ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-3 w-3" />
+                                )}
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </TableBody>
+                  </Table>
+                )}
+
+                {/* Add to another sector */}
+                {(() => {
+                  const taken = new Set(sectorRoles(rolesTarget).map((r) => r.sector_id))
+                  const available = sectors.filter((s) => s.is_active && !taken.has(s.id))
+                  if (available.length === 0) return null
+                  return (
+                    <div className="mt-3 rounded border border-dashed p-3 space-y-2">
+                      <p className="text-xs text-muted-foreground">
+                        Assign to another Sector:
+                      </p>
+                      <div className="grid grid-cols-3 gap-2">
+                        <Select value={assignSectorId} onValueChange={setAssignSectorId}>
+                          <SelectTrigger><SelectValue placeholder="Sector" /></SelectTrigger>
+                          <SelectContent>
+                            {available.map((s) => (
+                              <SelectItem key={s.id} value={s.id}>
+                                {s.name}{" "}
+                                <span className="text-muted-foreground text-xs">({s.code})</span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select value={assignRole} onValueChange={(v) => setAssignRole(v as SectorRoleName)}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="colonel">Colonel</SelectItem>
+                            <SelectItem value="captain">Captain</SelectItem>
+                            <SelectItem value="soldier">Soldier</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          disabled={!assignSectorId || rolesSaving === assignSectorId}
+                          onClick={() => {
+                            if (!assignSectorId) return
+                            assignSectorRole(rolesTarget, assignSectorId, assignRole)
+                          }}
+                        >
+                          {rolesSaving === assignSectorId ? (
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                          ) : null}
+                          Assign
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+
+              {rolesError && (
+                <Alert variant="destructive">
+                  <AlertDescription>{rolesError}</AlertDescription>
+                </Alert>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRolesTarget(null)}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---- Delete confirm ---- */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this user?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{deleteTarget?.username}</strong> will be removed
+              permanently. Their query history and feedback rows stay (audit
+              trail) but they will no longer be able to log in.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={submitDelete}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

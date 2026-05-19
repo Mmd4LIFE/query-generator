@@ -409,6 +409,25 @@ Phases are ordered by dependency. Do not start phase N+1 until phase N has shipp
 - ✅ api-client gains `createSector`, `updateSector`, `deleteSector`,
   `listSectorMembers`. `getUserPermissions()` now exposes `isGeneral`
   separately from the legacy `isAdmin` alias.
+- ✅ **User Management page** rebuilt for the new role model
+  ([components/user-settings-page.tsx](query-generator-frontend/components/user-settings-page.tsx)):
+  - Table shows badges per role: a "General" pill for cross-Sector
+    admins plus one outline pill per Sector membership ("Colonel @
+    ops", "Captain @ growth", …) using the Sector code from
+    `/v1/sectors`.
+  - Split into three focused dialogs:
+    - **Add user** — username, email, full_name, password, active flag.
+      Roles assigned separately (compose, don't conflate).
+    - **Edit details** — full_name, email, optional password reset,
+      active toggle. Username is immutable.
+    - **Manage roles** — dedicated dialog with a *General* switch
+      (calls `promoteToGeneral` / `revokeGeneral`) and a per-Sector
+      table where each row is `(Sector, role-dropdown, remove)`. An
+      "Assign to another Sector" inline form lets a General add
+      memberships without leaving the page.
+  - Activate / deactivate inline (UserCheck / UserX icon).
+  - Delete with confirmation dialog (no more `confirm()`).
+  - Cost-per-user column preserved (informational; non-blocking load).
 - 🔲 Sector-specific pages still missing: Corrections review queue UI,
   Sector settings UI, cost dashboards.
 - 🔲 Generate page URL move (under `/v1/sectors/{sid}/generate`) +
