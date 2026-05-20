@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -93,8 +93,19 @@ export default function QueryGeneratorApp() {
     if (typeof window !== 'undefined') localStorage.setItem('current_sector_id', sectorId)
   }
 
-  // Get user permissions
-  const permissions = getUserPermissions(userProfile)
+  // Compute a role profile scoped to the ACTIVE sector so that nav items
+  // reflect what the user can do in the currently-selected sector, not
+  // the highest role they hold across all sectors.
+  const currentRoleProfile = useMemo(() => {
+    if (!userProfile) return null
+    if (userProfile.is_general) return userProfile
+    const currentSector = sectors.find((s) => s.sector_id === activeSectorId)
+    if (!currentSector) return userProfile
+    return { ...userProfile, sectors: [currentSector] }
+  }, [userProfile, activeSectorId, sectors])
+
+  // Get user permissions scoped to current sector
+  const permissions = getUserPermissions(currentRoleProfile)
 
   // Check for existing authentication on component mount
   useEffect(() => {
@@ -111,7 +122,7 @@ export default function QueryGeneratorApp() {
           api.setToken(storedToken)
           const profile = await api.getUserProfile()
           setUserProfile(profile)
-          applySectorContextFromProfile(profile)
+          await applySectorContextFromProfile(profile)
           setIsAuthenticated(true)
           console.log('✅ Restored authentication from stored token')
         } else if (api.isDemoMode()) {
@@ -157,7 +168,7 @@ export default function QueryGeneratorApp() {
       const profile = await api.getUserProfile()
       console.log('👤 User profile:', profile)
       setUserProfile(profile)
-      applySectorContextFromProfile(profile)
+      await applySectorContextFromProfile(profile)
       setIsAuthenticated(true)
     } catch (err) {
       console.error('❌ Login failed:', err)
@@ -358,24 +369,40 @@ export default function QueryGeneratorApp() {
 
         {/* Main Content */}
         <main className="flex-1 pt-16 lg:pt-0 min-h-screen overflow-hidden lg:ml-0 ml-16">
-          {currentPage === "generate" && <QueryGenerator api={api} />}
-          {currentPage === "history" && <QueryHistoryPage api={api} userProfile={userProfile} />}
+          {/* key={activeSectorId} causes sector-scoped pages to fully remount
+              when the sector changes, triggering fresh data loads automatically. */}
+          {currentPage === "generate" && (
+            <QueryGenerator key={activeSectorId || '_'} api={api} />
+          )}
+          {currentPage === "history" && (
+            <QueryHistoryPage
+              key={activeSectorId || '_'}
+              api={api}
+              userProfile={userProfile}
+              activeSectorId={activeSectorId}
+            />
+          )}
           {currentPage === "catalogs" && (
-            <ManageCatalogsPage 
-              api={api} 
+            <ManageCatalogsPage
+              key={activeSectorId || '_'}
+              api={api}
               userPermissions={{
                 canCreateKnowledge: permissions.canManageCatalogs,
                 canApproveKnowledge: permissions.isAdmin,
               }}
             />
           )}
-          {currentPage === "users" && <UserSettingsPage api={api} />}
+          {currentPage === "users" && (
+            <UserSettingsPage
+              api={api}
+              userProfile={userProfile}
+              activeSectorId={activeSectorId}
+            />
+          )}
           {currentPage === "sectors" && permissions.isGeneral && (
             <SectorsAdminPage
               api={api}
               onSectorsChanged={() => {
-                // Refresh the header switcher when a sector is added /
-                // renamed / archived so the new state is visible immediately.
                 applySectorContextFromProfile(userProfile)
               }}
             />

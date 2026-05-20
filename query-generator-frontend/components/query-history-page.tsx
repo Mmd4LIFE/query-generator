@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -10,19 +10,21 @@ import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { History, Copy, CheckCircle, AlertCircle, Loader2, MessageSquare, Star, ThumbsUp, ThumbsDown, Eye, Calendar, User, Database, Search, Filter, Archive, Trash2, Inbox, Send, FileText, ChevronRight, MoreHorizontal } from "lucide-react"
 import { toast } from "sonner"
 import type { QueryGeneratorAPI, QueryHistoryItem, QueryFeedback } from "@/lib/api"
-import { getUserPermissions } from "@/lib/utils"
+import { getUserPermissions, roleInSector } from "@/lib/utils"
 
 interface QueryHistoryPageProps {
   api: QueryGeneratorAPI
   userProfile: any
+  activeSectorId?: string | null
 }
 
-export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
+export function QueryHistoryPage({ api, userProfile, activeSectorId }: QueryHistoryPageProps) {
   const [history, setHistory] = useState<QueryHistoryItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState("")
@@ -38,29 +40,35 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
   const [queryFeedback, setQueryFeedback] = useState<QueryFeedback[]>([])
   const [isLoadingFeedback, setIsLoadingFeedback] = useState(false)
   const [copied, setCopied] = useState(false)
-  
+
   // Email-style layout state
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedFilter, setSelectedFilter] = useState<"all" | "recent">("all")
   const [selectedQueryId, setSelectedQueryId] = useState<string | null>(null)
+  // User filter — Colonel/General can filter history to a specific user.
+  const [selectedUser, setSelectedUser] = useState<string>("all")
 
   const permissions = getUserPermissions(userProfile)
+
+  // Role in the active sector. Colonels and Generals see sector-wide history.
+  const currentRole = roleInSector(userProfile, activeSectorId ?? null)
+  const canSeeAllUsers = currentRole === 'colonel' || currentRole === 'general' || permissions.isGeneral
 
   useEffect(() => {
     loadHistory()
   }, [])
 
   const loadHistory = async () => {
-    console.log('🔄 Loading query history...')
     setIsLoading(true)
     setError("")
-    
     try {
-      const result = await api.getQueryHistory()
-      console.log('✅ Query history loaded:', result)
+      // Colonels and Generals load full sector history; others get own queries.
+      const scope = canSeeAllUsers ? 'sector' : 'own'
+      const result = await api.getQueryHistory({ scope })
       setHistory(result || [])
-    } catch (err) {
-      console.error('❌ Failed to load query history:', err)
+    } catch (err: any) {
+      if (err.name === 'SectorRequiredError' || !api.getCurrentSector()) return
+      console.error('Failed to load query history:', err)
       setError('Failed to load query history. Please try again.')
     } finally {
       setIsLoading(false)
@@ -171,19 +179,31 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
     return 'Neutral'
   }
 
+  // Derive unique users from loaded history for the user filter dropdown.
+  const historyUsers = useMemo(() => {
+    const seen = new Map<string, string>()
+    for (const item of history) {
+      if (item.user_id && item.username) seen.set(item.user_id, item.username)
+    }
+    return Array.from(seen.entries()).map(([id, name]) => ({ id, name }))
+  }, [history])
+
   // Filter and search logic
   const filteredHistory = history.filter((item) => {
     const matchesSearch = item.question.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         (item.catalog_name || '').toLowerCase().includes(searchQuery.toLowerCase())
-    
+                         (item.catalog_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         (item.username || '').toLowerCase().includes(searchQuery.toLowerCase())
+
+    const matchesUser = selectedUser === 'all' || item.user_id === selectedUser
+
     if (selectedFilter === "recent") {
       const date = new Date(item.created_at)
       const now = new Date()
       const diffHours = (now.getTime() - date.getTime()) / (1000 * 60 * 60)
-      return matchesSearch && diffHours < 24
+      return matchesSearch && matchesUser && diffHours < 24
     }
-    
-    return matchesSearch
+
+    return matchesSearch && matchesUser
   })
 
   const selectedQuery = history.find(item => item.id === selectedQueryId) || null
@@ -212,21 +232,33 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
           </div>
           
           {/* Filter Tabs */}
-          <div className="flex space-x-1 mt-3">
-            <Button
-              variant={selectedFilter === "all" ? "default" : "ghost"}
-              size="sm"
-              onClick={() => setSelectedFilter("all")}
-            >
-              All queries
-            </Button>
-            <Button
-              variant={selectedFilter === "recent" ? "default" : "ghost"}
-              size="sm"
-              onClick={() => setSelectedFilter("recent")}
-            >
-              Recent
-            </Button>
+          <div className="flex items-center justify-between mt-3 gap-2 flex-wrap">
+            <div className="flex space-x-1">
+              <Button variant={selectedFilter === "all" ? "default" : "ghost"} size="sm"
+                onClick={() => setSelectedFilter("all")}>
+                All queries
+              </Button>
+              <Button variant={selectedFilter === "recent" ? "default" : "ghost"} size="sm"
+                onClick={() => setSelectedFilter("recent")}>
+                Recent
+              </Button>
+            </div>
+            {/* User filter — visible to Colonel and General only */}
+            {canSeeAllUsers && historyUsers.length > 0 && (
+              <Select value={selectedUser} onValueChange={setSelectedUser}>
+                <SelectTrigger className="h-8 w-[150px] text-xs">
+                  <SelectValue placeholder="All users" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All users</SelectItem>
+                  {historyUsers.map((u) => (
+                    <SelectItem key={u.id} value={u.id}>
+                      {u.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
         </div>
 
@@ -288,6 +320,12 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                               <Calendar className="w-3 h-3" />
                               <span>{formatDate(item.created_at)}</span>
                             </div>
+                            {canSeeAllUsers && item.username && (
+                              <div className="flex items-center space-x-1" title="Query author">
+                                <User className="w-3 h-3" />
+                                <span>{item.username}</span>
+                              </div>
+                            )}
                             {typeof item.cost_usd === "number" && (
                               <div className="flex items-center space-x-1" title="OpenAI cost for this generation">
                                 <span>${item.cost_usd.toFixed(4)}</span>
@@ -336,6 +374,15 @@ export function QueryHistoryPage({ api, userProfile }: QueryHistoryPageProps) {
                     <span>{selectedQuery.engine}</span>
                     <span>•</span>
                     <span>{selectedQuery.catalog_name}</span>
+                    {canSeeAllUsers && selectedQuery.username && (
+                      <>
+                        <span>•</span>
+                        <span className="flex items-center gap-1">
+                          <User className="w-3 h-3" />
+                          {selectedQuery.username}
+                        </span>
+                      </>
+                    )}
                     {selectedQuery.model_used && (
                       <>
                         <span>•</span>

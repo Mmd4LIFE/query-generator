@@ -9,6 +9,70 @@ Phases are ordered by dependency. Do not start phase N+1 until phase N has shipp
 
 ---
 
+## Status — Phases 1–2 complete (backend + frontend); Phase 7 UX session 2 complete
+
+### Done this session (frontend UX + bug fixes — 2026-05-20)
+
+**Bug fixes**
+
+- `app/page.tsx` — `applySectorContextFromProfile` was not `await`-ed before
+  `setIsAuthenticated(true)`. This caused `QueryGenerator` to mount and call
+  `api.getCatalogs()` before the sector was resolved, triggering the false
+  "Failed to load catalogs" error. Fixed by `await`-ing both login paths
+  (`handleLogin` + `checkExistingAuth`).
+- `components/query-generator.tsx` — `SectorRequiredError` is now caught
+  silently so a race-condition mount doesn't flash an error to the user.
+
+**Sector-aware remounting**
+
+- `app/page.tsx` — every sector-scoped page (`QueryGenerator`,
+  `QueryHistoryPage`, `ManageCatalogsPage`) now receives `key={activeSectorId}`.
+  Switching the sector in the header causes a clean remount so each page
+  fetches fresh data for the new sector automatically. No manual refresh needed.
+
+**Per-sector permissions**
+
+- `app/page.tsx` — `currentRoleProfile` is derived from the *active sector's*
+  membership only. Navigation items now reflect the user's role in the
+  **current** sector, not the highest role they hold across all sectors. A user
+  who is Colonel in Sector A but Soldier in Sector B sees different nav items
+  after switching.
+
+**Colonel — User Management access**
+
+- `lib/utils.ts` — `canManageUsers` now includes `colonel` in addition to
+  `general`. Colonel sees the "User Management" nav item.
+- `components/user-settings-page.tsx` — **split into two views**:
+  - **Colonel view** (`ColonelUserView`) — rendered when caller is not General.
+    Uses `GET /v1/sectors/{sid}/members`. Shows sector members, supports
+    Captain/Soldier role-change and remove-from-sector. Cannot promote to
+    Colonel, cannot delete/deactivate users (those are General-only).
+  - **General view** (`GeneralUserView`) — existing full-system table
+    (unchanged functionality).
+
+**Edit User dialog — Roles tab**
+
+- `components/user-settings-page.tsx` — the standalone "manage roles" dialog
+  (shield icon) is merged into the Edit dialog as a **Roles tab**. The edit
+  dialog now has two tabs: "Details" (full_name, email, password, active) and
+  "Roles" (General switch + per-Sector role table + assign-to-new-sector form).
+  The separate shield-icon button is removed to reduce confusion.
+
+**Query History — Colonel/General user filter**
+
+- `components/query-history-page.tsx` — detects the caller's role in the
+  active sector via `roleInSector(userProfile, activeSectorId)`.
+  - Colonels and Generals load with `scope='sector'` (all sector queries).
+  - Soldiers / Captains load with `scope='own'` (own queries only).
+  - A **user filter** dropdown appears for Colonels/Generals, built from the
+    usernames present in the loaded history. Filtering is client-side.
+  - Username is shown inline in each history list item and in the detail header
+    when the caller can see all users.
+
+**Verification**
+
+- `tsc --noEmit` exits 0 — no TypeScript errors introduced.
+
 ## Status — Phase 1 backend complete; ready to apply migration + start Phase 2
 
 ### Done

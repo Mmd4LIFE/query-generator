@@ -144,10 +144,10 @@ export function canManageSecurityPolicies(userProfile: UserProfile | null): bool
 }
 
 
-/** Only Generals can create cross-Sector users; Colonels manage members
- *  inside their own Sector via the Sector members API. */
+/** Generals manage all system users. Colonels manage members inside their
+ *  own Sector via the Sector members API (read-only for other sectors). */
 export function canManageUsers(userProfile: UserProfile | null): boolean {
-  return isGeneral(userProfile)
+  return isGeneral(userProfile) || hasRoleAnywhere(userProfile, 'colonel')
 }
 
 

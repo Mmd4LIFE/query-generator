@@ -41,6 +41,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Users,
   Plus,
@@ -54,22 +55,23 @@ import {
   Loader2,
 } from "lucide-react"
 import type { QueryGeneratorAPI, Sector } from "@/lib/api"
+import { isGeneral as checkIsGeneral } from "@/lib/utils"
 
 interface UserSettingsPageProps {
   api: QueryGeneratorAPI
+  userProfile?: any
+  activeSectorId?: string | null
 }
 
 // ---------------------------------------------------------------------------
-// Types — narrower than UserProfile because we know the backend shape.
+// Types
 // ---------------------------------------------------------------------------
 
 type SectorRoleName = "colonel" | "captain" | "soldier"
 
 interface BackendRole {
-  /** UserRole row id (used for deletes when applicable). */
   id?: string
   role_name: "general" | SectorRoleName | string
-  /** NULL for General; required otherwise. */
   sector_id: string | null
 }
 
@@ -90,6 +92,14 @@ interface CostStat {
   total_tokens: number
 }
 
+interface SectorMember {
+  user_id: string
+  username: string
+  email: string
+  full_name?: string | null
+  role: SectorRoleName
+}
+
 const ROLE_LABEL: Record<string, string> = {
   general: "General",
   colonel: "Colonel",
@@ -98,17 +108,262 @@ const ROLE_LABEL: Record<string, string> = {
 }
 
 // ---------------------------------------------------------------------------
+// Colonel view — sector member management
+// ---------------------------------------------------------------------------
 
-export function UserSettingsPage({ api }: UserSettingsPageProps) {
+function ColonelUserView({
+  api,
+  activeSectorId,
+}: {
+  api: QueryGeneratorAPI
+  activeSectorId: string
+}) {
+  const [members, setMembers] = useState<SectorMember[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [saving, setSaving] = useState<string>("")
+
+  // Add member form
+  const [addUsername, setAddUsername] = useState("")
+  const [addRole, setAddRole] = useState<"captain" | "soldier">("soldier")
+  const [allUsers, setAllUsers] = useState<{ id: string; username: string }[]>([])
+  const [addUserId, setAddUserId] = useState("")
+  const [addSaving, setAddSaving] = useState(false)
+
+  const loadMembers = async () => {
+    setIsLoading(true)
+    setError("")
+    try {
+      const list = await api.listSectorMembers(activeSectorId)
+      setMembers(list as SectorMember[])
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to load sector members")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // Load all users so colonel can add someone not yet in the sector.
+  // If /auth/users is General-only this will fail silently — colonel can
+  // still manage existing members; adding new ones requires a General.
+  const loadAllUsers = async () => {
+    try {
+      const list = await api.getUsers()
+      setAllUsers((Array.isArray(list) ? list : []).map((u: any) => ({ id: u.id, username: u.username })))
+    } catch {
+      // getUsers is General-only; colonel silently skips the add form.
+    }
+  }
+
+  useEffect(() => {
+    loadMembers()
+    loadAllUsers()
+  }, [activeSectorId])
+
+  const changeRole = async (memberId: string, newRole: SectorRoleName) => {
+    setSaving(memberId)
+    setError("")
+    try {
+      await api.assignUserRole(memberId, newRole, activeSectorId)
+      await loadMembers()
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to change role")
+    } finally {
+      setSaving("")
+    }
+  }
+
+  const removeMember = async (memberId: string) => {
+    setSaving(`remove-${memberId}`)
+    setError("")
+    try {
+      await api.removeUserRole(memberId, activeSectorId)
+      await loadMembers()
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to remove member")
+    } finally {
+      setSaving("")
+    }
+  }
+
+  const addMember = async () => {
+    if (!addUserId) return
+    setAddSaving(true)
+    setError("")
+    try {
+      await api.assignUserRole(addUserId, addRole, activeSectorId)
+      setAddUserId("")
+      setAddRole("soldier")
+      await loadMembers()
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to add member")
+    } finally {
+      setAddSaving(false)
+    }
+  }
+
+  const memberIds = new Set(members.map((m) => m.user_id))
+  const availableToAdd = allUsers.filter((u) => !memberIds.has(u.id))
+
+  return (
+    <div className="p-6 space-y-6 overflow-auto max-h-[calc(100vh-4rem)]">
+      <div>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <Users className="h-6 w-6" />
+          Sector Members
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Manage Captain and Soldier roles in this sector. Contact a General to
+          promote someone to Colonel or create new accounts.
+        </p>
+      </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Shield className="w-4 h-4" />
+            Members ({members.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : members.length === 0 ? (
+            <p className="text-center py-8 text-muted-foreground">No members yet.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>User</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead className="w-[80px]"></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {members.map((m) => {
+                  const busy = saving === m.user_id || saving === `remove-${m.user_id}`
+                  const isColonel = m.role === "colonel"
+                  return (
+                    <TableRow key={m.user_id}>
+                      <TableCell className="font-medium">
+                        {m.full_name || m.username}
+                        <div className="text-xs text-muted-foreground">@{m.username}</div>
+                      </TableCell>
+                      <TableCell className="text-sm">{m.email}</TableCell>
+                      <TableCell>
+                        {isColonel ? (
+                          <Badge className="gap-1">
+                            <ShieldCheck className="h-3 w-3" />
+                            Colonel
+                          </Badge>
+                        ) : (
+                          <Select
+                            value={m.role}
+                            disabled={busy}
+                            onValueChange={(v) => changeRole(m.user_id, v as SectorRoleName)}
+                          >
+                            <SelectTrigger className="h-8 w-[120px]">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="captain">Captain</SelectItem>
+                              <SelectItem value="soldier">Soldier</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {!isColonel && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={busy}
+                            onClick={() => removeMember(m.user_id)}
+                            className="text-red-600 hover:text-red-800"
+                          >
+                            {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          )}
+
+          {/* Add member — only if we have the user list (Colonel may not) */}
+          {availableToAdd.length > 0 && (
+            <div className="mt-4 rounded border border-dashed p-3 space-y-2">
+              <p className="text-xs text-muted-foreground font-medium">Add member to this sector:</p>
+              <div className="grid grid-cols-3 gap-2">
+                <Select value={addUserId} onValueChange={setAddUserId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select user" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableToAdd.map((u) => (
+                      <SelectItem key={u.id} value={u.id}>
+                        {u.username}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select value={addRole} onValueChange={(v) => setAddRole(v as "captain" | "soldier")}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="captain">Captain</SelectItem>
+                    <SelectItem value="soldier">Soldier</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button disabled={!addUserId || addSaving} onClick={addMember}>
+                  {addSaving && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+                  Add
+                </Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// General view — full system user management
+// ---------------------------------------------------------------------------
+
+export function UserSettingsPage({ api, userProfile, activeSectorId }: UserSettingsPageProps) {
+  const callerIsGeneral = checkIsGeneral(userProfile)
+
+  // Colonels see the sector-member management view.
+  if (!callerIsGeneral && activeSectorId) {
+    return <ColonelUserView api={api} activeSectorId={activeSectorId} />
+  }
+
+  return <GeneralUserView api={api} />
+}
+
+function GeneralUserView({ api }: { api: QueryGeneratorAPI }) {
   const [users, setUsers] = useState<UserRow[]>([])
   const [sectors, setSectors] = useState<Sector[]>([])
   const [costByUser, setCostByUser] = useState<Record<string, CostStat>>({})
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string>("")
 
-  // Create dialog. Role assignment is optional at create-time — pick "none"
-  // to make the bare account and assign roles later via the shield icon.
-  // 'general' is cross-Sector (no sector_id); the other three need one.
+  // Create dialog
   type CreateRole = "none" | "general" | "colonel" | "captain" | "soldier"
   const [createOpen, setCreateOpen] = useState(false)
   const [createDraft, setCreateDraft] = useState<{
@@ -130,7 +385,7 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
   })
   const [createSaving, setCreateSaving] = useState(false)
 
-  // Edit details dialog
+  // Combined Edit + Roles dialog
   const [editTarget, setEditTarget] = useState<UserRow | null>(null)
   const [editDraft, setEditDraft] = useState({
     full_name: "",
@@ -140,11 +395,9 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
   })
   const [editSaving, setEditSaving] = useState(false)
 
-  // Manage roles dialog
-  const [rolesTarget, setRolesTarget] = useState<UserRow | null>(null)
-  const [rolesSaving, setRolesSaving] = useState<string>("")  // sectorId or 'general'
+  // Roles sub-state (used inside the combined dialog)
+  const [rolesSaving, setRolesSaving] = useState<string>("")
   const [rolesError, setRolesError] = useState<string>("")
-  // Inline assign-to-new-sector form state.
   const [assignSectorId, setAssignSectorId] = useState<string>("")
   const [assignRole, setAssignRole] = useState<SectorRoleName>("soldier")
 
@@ -197,7 +450,6 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
       }
       setCostByUser(map)
     } catch (e) {
-      // Informational — never block the page.
       console.error("Failed to load user cost summary:", e)
     }
   }
@@ -224,15 +476,33 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
     return m
   }, [sectors])
 
-  const isGeneral = (u: UserRow) => u.roles.some((r) => r.role_name === "general")
+  const isGeneralUser = (u: UserRow) => u.roles.some((r) => r.role_name === "general")
 
   const sectorRoles = (u: UserRow): Array<{ sector_id: string; role: SectorRoleName }> =>
     u.roles
       .filter((r) => r.role_name !== "general" && r.sector_id)
-      .map((r) => ({
-        sector_id: r.sector_id as string,
-        role: r.role_name as SectorRoleName,
-      }))
+      .map((r) => ({ sector_id: r.sector_id as string, role: r.role_name as SectorRoleName }))
+
+  // Re-sync the editTarget after any role mutation so the dialog stays fresh.
+  const syncEditTarget = async (userId: string, currentTarget: UserRow) => {
+    try {
+      const fresh = (await api.getUsers()).find((x: any) => x.id === userId)
+      if (fresh) {
+        const synced: UserRow = {
+          ...currentTarget,
+          roles: Array.isArray(fresh.roles)
+            ? fresh.roles.map((r: any) => ({
+                id: r.id,
+                role_name: typeof r === "string" ? r : r.role_name,
+                sector_id: typeof r === "string" ? null : (r.sector_id ?? null),
+              }))
+            : [],
+        }
+        setEditTarget(synced)
+        await loadUsers()
+      }
+    } catch {}
+  }
 
   // ---- Mutations: details -----------------------------------------------
 
@@ -240,13 +510,8 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
     setCreateSaving(true)
     setError("")
     try {
-      // 1. Create the account itself.
       const { role, sector_id, ...accountData } = createDraft
       const newUser = await api.createUser(accountData)
-
-      // 2. Optional role assignment in the same submit. If anything below
-      //    fails we surface the partial-success state: the user exists, but
-      //    has no role yet — admin can finish via the shield icon.
       try {
         if (role === "general") {
           await api.promoteToGeneral(newUser.id)
@@ -259,17 +524,8 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
             `Use the shield icon to assign a role.`,
         )
       }
-
       setCreateOpen(false)
-      setCreateDraft({
-        username: "",
-        full_name: "",
-        email: "",
-        password: "",
-        is_active: true,
-        role: "none",
-        sector_id: "",
-      })
+      setCreateDraft({ username: "", full_name: "", email: "", password: "", is_active: true, role: "none", sector_id: "" })
       await loadUsers()
     } catch (e: any) {
       setError(e?.message ?? "Failed to create user")
@@ -283,12 +539,7 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
     setEditSaving(true)
     setError("")
     try {
-      // Only send the changed fields. Empty password = "keep current".
-      const patch: any = {
-        full_name: editDraft.full_name,
-        email: editDraft.email,
-        is_active: editDraft.is_active,
-      }
+      const patch: any = { full_name: editDraft.full_name, email: editDraft.email, is_active: editDraft.is_active }
       if (editDraft.password.trim()) patch.password = editDraft.password
       await api.updateUser(editTarget.id, patch)
       setEditTarget(null)
@@ -320,33 +571,15 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
     }
   }
 
-  // ---- Mutations: roles -------------------------------------------------
+  // ---- Mutations: roles (inside combined dialog) ------------------------
 
   const toggleGeneral = async (u: UserRow, makeGeneral: boolean) => {
     setRolesSaving("general")
     setRolesError("")
     try {
-      if (makeGeneral) {
-        await api.promoteToGeneral(u.id)
-      } else {
-        await api.revokeGeneral(u.id)
-      }
-      // Reload both the user list and the dialog target.
-      await loadUsers()
-      // Sync rolesTarget with the new data.
-      const fresh = (await api.getUsers()).find((x: any) => x.id === u.id)
-      if (fresh) {
-        setRolesTarget({
-          ...u,
-          roles: Array.isArray(fresh.roles)
-            ? fresh.roles.map((r: any) => ({
-                id: r.id,
-                role_name: typeof r === "string" ? r : r.role_name,
-                sector_id: typeof r === "string" ? null : (r.sector_id ?? null),
-              }))
-            : [],
-        })
-      }
+      if (makeGeneral) await api.promoteToGeneral(u.id)
+      else await api.revokeGeneral(u.id)
+      await syncEditTarget(u.id, u)
     } catch (e: any) {
       setRolesError(e?.message ?? "Failed to update General status")
     } finally {
@@ -354,32 +587,14 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
     }
   }
 
-  const assignSectorRole = async (
-    u: UserRow,
-    sectorId: string,
-    role: SectorRoleName,
-  ) => {
+  const assignSectorRole = async (u: UserRow, sectorId: string, role: SectorRoleName) => {
     setRolesSaving(sectorId)
     setRolesError("")
     try {
       await api.assignUserRole(u.id, role, sectorId)
-      await loadUsers()
-      const fresh = (await api.getUsers()).find((x: any) => x.id === u.id)
-      if (fresh) {
-        setRolesTarget({
-          ...u,
-          roles: Array.isArray(fresh.roles)
-            ? fresh.roles.map((r: any) => ({
-                id: r.id,
-                role_name: typeof r === "string" ? r : r.role_name,
-                sector_id: typeof r === "string" ? null : (r.sector_id ?? null),
-              }))
-            : [],
-        })
-      }
-      // Reset inline assign form if it was used.
       setAssignSectorId("")
       setAssignRole("soldier")
+      await syncEditTarget(u.id, u)
     } catch (e: any) {
       setRolesError(e?.message ?? "Failed to assign role")
     } finally {
@@ -392,20 +607,7 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
     setRolesError("")
     try {
       await api.removeUserRole(u.id, sectorId)
-      await loadUsers()
-      const fresh = (await api.getUsers()).find((x: any) => x.id === u.id)
-      if (fresh) {
-        setRolesTarget({
-          ...u,
-          roles: Array.isArray(fresh.roles)
-            ? fresh.roles.map((r: any) => ({
-                id: r.id,
-                role_name: typeof r === "string" ? r : r.role_name,
-                sector_id: typeof r === "string" ? null : (r.sector_id ?? null),
-              }))
-            : [],
-        })
-      }
+      await syncEditTarget(u.id, u)
     } catch (e: any) {
       setRolesError(e?.message ?? "Failed to remove role")
     } finally {
@@ -413,7 +615,13 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
     }
   }
 
-  // ---- Helpers ----------------------------------------------------------
+  const openEdit = (u: UserRow) => {
+    setEditTarget(u)
+    setEditDraft({ full_name: u.full_name ?? "", email: u.email, password: "", is_active: u.is_active })
+    setRolesError("")
+    setAssignSectorId("")
+    setAssignRole("soldier")
+  }
 
   const formatDate = (s?: string | null) => (s ? new Date(s).toLocaleDateString() : "—")
 
@@ -473,12 +681,12 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
                   <TableHead>Status</TableHead>
                   <TableHead>Last Login</TableHead>
                   <TableHead className="text-right">Cost (USD)</TableHead>
-                  <TableHead className="w-[180px]">Actions</TableHead>
+                  <TableHead className="w-[140px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {users.map((u) => {
-                  const general = isGeneral(u)
+                  const general = isGeneralUser(u)
                   const sRoles = sectorRoles(u)
                   const cost = costByUser[u.id]
                   return (
@@ -502,11 +710,7 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
                           {sRoles.map((r) => {
                             const sector = sectorById[r.sector_id]
                             return (
-                              <Badge
-                                key={r.sector_id}
-                                variant="outline"
-                                className="gap-1"
-                              >
+                              <Badge key={r.sector_id} variant="outline" className="gap-1">
                                 <Shield className="h-3 w-3" />
                                 {ROLE_LABEL[r.role] ?? r.role}
                                 <span className="text-muted-foreground">
@@ -533,9 +737,7 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
                       <TableCell>{formatDate(u.last_login)}</TableCell>
                       <TableCell className="text-right tabular-nums">
                         {cost ? (
-                          <span
-                            title={`${cost.total_queries.toLocaleString()} queries · ${cost.total_tokens.toLocaleString()} tokens`}
-                          >
+                          <span title={`${cost.total_queries.toLocaleString()} queries · ${cost.total_tokens.toLocaleString()} tokens`}>
                             ${cost.total_cost_usd.toFixed(4)}
                           </span>
                         ) : (
@@ -547,29 +749,8 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => {
-                              setRolesTarget(u)
-                              setRolesError("")
-                              setAssignSectorId("")
-                              setAssignRole("soldier")
-                            }}
-                            title="Manage roles"
-                          >
-                            <Shield className="w-4 h-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => {
-                              setEditTarget(u)
-                              setEditDraft({
-                                full_name: u.full_name ?? "",
-                                email: u.email,
-                                password: "",
-                                is_active: u.is_active,
-                              })
-                            }}
-                            title="Edit details"
+                            onClick={() => openEdit(u)}
+                            title="Edit user & manage roles"
                           >
                             <Edit className="w-4 h-4" />
                           </Button>
@@ -607,77 +788,47 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
           <DialogHeader>
             <DialogTitle>Add User</DialogTitle>
             <DialogDescription>
-              Create an account first; assign roles separately via the shield
-              icon in the user row.
+              Create an account and optionally assign an initial role.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="c-username">Username</Label>
-              <Input
-                id="c-username"
-                value={createDraft.username}
+              <Input id="c-username" value={createDraft.username}
                 onChange={(e) => setCreateDraft({ ...createDraft, username: e.target.value })}
-                placeholder="jdoe"
-              />
+                placeholder="jdoe" />
             </div>
             <div className="space-y-1">
               <Label htmlFor="c-fullname">Full name</Label>
-              <Input
-                id="c-fullname"
-                value={createDraft.full_name}
+              <Input id="c-fullname" value={createDraft.full_name}
                 onChange={(e) => setCreateDraft({ ...createDraft, full_name: e.target.value })}
-                placeholder="Jane Doe"
-              />
+                placeholder="Jane Doe" />
             </div>
             <div className="space-y-1">
               <Label htmlFor="c-email">Email</Label>
-              <Input
-                id="c-email"
-                type="email"
-                value={createDraft.email}
+              <Input id="c-email" type="email" value={createDraft.email}
                 onChange={(e) => setCreateDraft({ ...createDraft, email: e.target.value })}
-                placeholder="jane@company.com"
-              />
+                placeholder="jane@company.com" />
             </div>
             <div className="space-y-1">
               <Label htmlFor="c-password">Password</Label>
-              <Input
-                id="c-password"
-                type="password"
-                value={createDraft.password}
-                onChange={(e) => setCreateDraft({ ...createDraft, password: e.target.value })}
-              />
+              <Input id="c-password" type="password" value={createDraft.password}
+                onChange={(e) => setCreateDraft({ ...createDraft, password: e.target.value })} />
             </div>
 
-            {/* Optional initial role. Defaults to None — the General can
-                always assign roles later via the shield icon. */}
             <div className="rounded border p-3 space-y-3 bg-muted/20">
               <div>
                 <Label className="text-sm">Initial role (optional)</Label>
                 <p className="text-xs text-muted-foreground">
-                  Skip and assign later, or grant a role right now.
-                  &nbsp;<strong>General</strong> is cross-Sector;
-                  Colonel / Captain / Soldier need a target Sector.
+                  <strong>General</strong> is cross-Sector; Colonel / Captain / Soldier need a target Sector.
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label htmlFor="c-role" className="text-xs">Role</Label>
-                  <Select
-                    value={createDraft.role}
-                    onValueChange={(v) =>
-                      setCreateDraft({
-                        ...createDraft,
-                        role: v as CreateRole,
-                        // Clear sector when switching to a role that doesn't need one.
-                        sector_id: v === "general" || v === "none" ? "" : createDraft.sector_id,
-                      })
-                    }
-                  >
-                    <SelectTrigger id="c-role">
-                      <SelectValue />
-                    </SelectTrigger>
+                  <Select value={createDraft.role}
+                    onValueChange={(v) => setCreateDraft({ ...createDraft, role: v as CreateRole, sector_id: v === "general" || v === "none" ? "" : createDraft.sector_id })}>
+                    <SelectTrigger id="c-role"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="none">None</SelectItem>
                       <SelectItem value="general">General · cross-Sector</SelectItem>
@@ -687,29 +838,18 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
                     </SelectContent>
                   </Select>
                 </div>
-                {(createDraft.role === "colonel" ||
-                  createDraft.role === "captain" ||
-                  createDraft.role === "soldier") && (
+                {(createDraft.role === "colonel" || createDraft.role === "captain" || createDraft.role === "soldier") && (
                   <div className="space-y-1">
                     <Label htmlFor="c-sector" className="text-xs">Sector</Label>
-                    <Select
-                      value={createDraft.sector_id || undefined}
-                      onValueChange={(v) =>
-                        setCreateDraft({ ...createDraft, sector_id: v })
-                      }
-                    >
-                      <SelectTrigger id="c-sector">
-                        <SelectValue placeholder="Pick a Sector" />
-                      </SelectTrigger>
+                    <Select value={createDraft.sector_id || undefined}
+                      onValueChange={(v) => setCreateDraft({ ...createDraft, sector_id: v })}>
+                      <SelectTrigger id="c-sector"><SelectValue placeholder="Pick a Sector" /></SelectTrigger>
                       <SelectContent>
-                        {sectors
-                          .filter((s) => s.is_active)
-                          .map((s) => (
-                            <SelectItem key={s.id} value={s.id}>
-                              {s.name}{" "}
-                              <span className="text-muted-foreground text-xs">({s.code})</span>
-                            </SelectItem>
-                          ))}
+                        {sectors.filter((s) => s.is_active).map((s) => (
+                          <SelectItem key={s.id} value={s.id}>
+                            {s.name} <span className="text-muted-foreground text-xs">({s.code})</span>
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -720,33 +860,17 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
             <div className="flex items-center justify-between rounded border p-3">
               <div>
                 <Label htmlFor="c-active">Active</Label>
-                <p className="text-xs text-muted-foreground">
-                  Inactive users cannot log in.
-                </p>
+                <p className="text-xs text-muted-foreground">Inactive users cannot log in.</p>
               </div>
-              <Switch
-                id="c-active"
-                checked={createDraft.is_active}
-                onCheckedChange={(c) => setCreateDraft({ ...createDraft, is_active: c })}
-              />
+              <Switch id="c-active" checked={createDraft.is_active}
+                onCheckedChange={(c) => setCreateDraft({ ...createDraft, is_active: c })} />
             </div>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button
-              onClick={submitCreate}
-              disabled={
-                createSaving ||
-                !createDraft.username ||
-                !createDraft.email ||
-                !createDraft.password ||
-                // A sector-scoped role requires a Sector pick.
-                ((createDraft.role === "colonel" ||
-                  createDraft.role === "captain" ||
-                  createDraft.role === "soldier") &&
-                  !createDraft.sector_id)
-              }
-            >
+            <Button onClick={submitCreate}
+              disabled={createSaving || !createDraft.username || !createDraft.email || !createDraft.password ||
+                ((createDraft.role === "colonel" || createDraft.role === "captain" || createDraft.role === "soldier") && !createDraft.sector_id)}>
               {createSaving && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
               Create
             </Button>
@@ -754,246 +878,197 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
         </DialogContent>
       </Dialog>
 
-      {/* ---- Edit user details ---- */}
+      {/* ---- Combined Edit + Roles dialog ---- */}
       <Dialog open={!!editTarget} onOpenChange={(open) => !open && setEditTarget(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit user</DialogTitle>
-            <DialogDescription>
-              Username is immutable. To change roles, close this and click the
-              shield icon.
-            </DialogDescription>
-          </DialogHeader>
-          {editTarget && (
-            <div className="space-y-3">
-              <div className="space-y-1">
-                <Label>Username</Label>
-                <Input value={editTarget.username} disabled />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="e-fullname">Full name</Label>
-                <Input
-                  id="e-fullname"
-                  value={editDraft.full_name}
-                  onChange={(e) => setEditDraft({ ...editDraft, full_name: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="e-email">Email</Label>
-                <Input
-                  id="e-email"
-                  type="email"
-                  value={editDraft.email}
-                  onChange={(e) => setEditDraft({ ...editDraft, email: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="e-password">Reset password (optional)</Label>
-                <Input
-                  id="e-password"
-                  type="password"
-                  placeholder="Leave blank to keep current"
-                  value={editDraft.password}
-                  onChange={(e) => setEditDraft({ ...editDraft, password: e.target.value })}
-                />
-              </div>
-              <div className="flex items-center justify-between rounded border p-3">
-                <div>
-                  <Label htmlFor="e-active">Active</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Inactive users cannot log in or hit any API.
-                  </p>
-                </div>
-                <Switch
-                  id="e-active"
-                  checked={editDraft.is_active}
-                  onCheckedChange={(c) => setEditDraft({ ...editDraft, is_active: c })}
-                />
-              </div>
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setEditTarget(null)}>Cancel</Button>
-            <Button onClick={submitEdit} disabled={editSaving}>
-              {editSaving && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* ---- Manage roles ---- */}
-      <Dialog open={!!rolesTarget} onOpenChange={(open) => !open && setRolesTarget(null)}>
-        <DialogContent className="sm:max-w-[640px]">
+        <DialogContent className="sm:max-w-[680px]">
           <DialogHeader>
             <DialogTitle>
-              Manage roles
-              {rolesTarget && (
+              Edit User
+              {editTarget && (
                 <span className="text-muted-foreground text-sm font-normal ml-2">
-                  · {rolesTarget.full_name || rolesTarget.username}
+                  · {editTarget.full_name || editTarget.username}
                 </span>
               )}
             </DialogTitle>
             <DialogDescription>
-              A user holds at most one role per Sector. The General role is
-              cross-Sector and has no Sector membership row.
+              Update account details and manage sector roles.
             </DialogDescription>
           </DialogHeader>
-          {rolesTarget && (
-            <div className="space-y-5">
-              {/* General toggle */}
-              <div className="flex items-start justify-between rounded border p-3">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck className="h-4 w-4" />
-                    <Label className="text-sm">General (cross-Sector admin)</Label>
-                  </div>
-                  <p className="text-xs text-muted-foreground max-w-md">
-                    Grants full access to every Sector and the ability to
-                    create / archive Sectors. Use sparingly.
-                  </p>
-                </div>
-                <Switch
-                  checked={isGeneral(rolesTarget)}
-                  disabled={rolesSaving === "general"}
-                  onCheckedChange={(c) => toggleGeneral(rolesTarget, c)}
-                />
-              </div>
+          {editTarget && (
+            <Tabs defaultValue="details" className="w-full">
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="details">Details</TabsTrigger>
+                <TabsTrigger value="roles">
+                  Roles
+                  {sectorRoles(editTarget).length > 0 && (
+                    <Badge variant="secondary" className="ml-1 text-xs px-1">
+                      {sectorRoles(editTarget).length}
+                    </Badge>
+                  )}
+                </TabsTrigger>
+              </TabsList>
 
-              {/* Per-sector roles */}
-              <div>
-                <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
-                  <Shield className="h-4 w-4" />
-                  Sector roles
-                </h4>
-                {sectorRoles(rolesTarget).length === 0 ? (
-                  <p className="text-sm text-muted-foreground py-2">
-                    Not a member of any Sector yet.
-                  </p>
-                ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Sector</TableHead>
-                        <TableHead>Role</TableHead>
-                        <TableHead className="w-[80px]"></TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {sectorRoles(rolesTarget).map((r) => {
-                        const s = sectorById[r.sector_id]
-                        const busy = rolesSaving === r.sector_id
-                        return (
-                          <TableRow key={r.sector_id}>
-                            <TableCell>
-                              {s?.name ?? "—"}
-                              <span className="text-muted-foreground text-xs ml-1">
-                                ({s?.code ?? r.sector_id.slice(0, 6)})
-                              </span>
-                            </TableCell>
-                            <TableCell>
-                              <Select
-                                value={r.role}
-                                disabled={busy}
-                                onValueChange={(v) =>
-                                  assignSectorRole(
-                                    rolesTarget,
-                                    r.sector_id,
-                                    v as SectorRoleName,
-                                  )
-                                }
-                              >
-                                <SelectTrigger className="h-8 w-[140px]">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="colonel">Colonel</SelectItem>
-                                  <SelectItem value="captain">Captain</SelectItem>
-                                  <SelectItem value="soldier">Soldier</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </TableCell>
-                            <TableCell>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                disabled={busy}
-                                onClick={() => removeSectorRole(rolesTarget, r.sector_id)}
-                              >
-                                {busy ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : (
-                                  <Trash2 className="h-3 w-3" />
-                                )}
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        )
-                      })}
-                    </TableBody>
-                  </Table>
+              {/* ---- Details tab ---- */}
+              <TabsContent value="details" className="space-y-3 mt-4">
+                <div className="space-y-1">
+                  <Label>Username</Label>
+                  <Input value={editTarget.username} disabled />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="e-fullname">Full name</Label>
+                  <Input id="e-fullname" value={editDraft.full_name}
+                    onChange={(e) => setEditDraft({ ...editDraft, full_name: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="e-email">Email</Label>
+                  <Input id="e-email" type="email" value={editDraft.email}
+                    onChange={(e) => setEditDraft({ ...editDraft, email: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="e-password">Reset password (optional)</Label>
+                  <Input id="e-password" type="password" placeholder="Leave blank to keep current"
+                    value={editDraft.password}
+                    onChange={(e) => setEditDraft({ ...editDraft, password: e.target.value })} />
+                </div>
+                <div className="flex items-center justify-between rounded border p-3">
+                  <div>
+                    <Label htmlFor="e-active">Active</Label>
+                    <p className="text-xs text-muted-foreground">Inactive users cannot log in.</p>
+                  </div>
+                  <Switch id="e-active" checked={editDraft.is_active}
+                    onCheckedChange={(c) => setEditDraft({ ...editDraft, is_active: c })} />
+                </div>
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="ghost" onClick={() => setEditTarget(null)}>Cancel</Button>
+                  <Button onClick={submitEdit} disabled={editSaving}>
+                    {editSaving && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+                    Save details
+                  </Button>
+                </div>
+              </TabsContent>
+
+              {/* ---- Roles tab ---- */}
+              <TabsContent value="roles" className="space-y-5 mt-4">
+                {/* General toggle */}
+                <div className="flex items-start justify-between rounded border p-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="h-4 w-4" />
+                      <Label className="text-sm">General (cross-Sector admin)</Label>
+                    </div>
+                    <p className="text-xs text-muted-foreground max-w-md">
+                      Full access to every Sector. Can create / archive Sectors.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={isGeneralUser(editTarget)}
+                    disabled={rolesSaving === "general"}
+                    onCheckedChange={(c) => toggleGeneral(editTarget, c)}
+                  />
+                </div>
+
+                {/* Per-sector roles */}
+                <div>
+                  <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
+                    <Shield className="h-4 w-4" /> Sector roles
+                  </h4>
+                  {sectorRoles(editTarget).length === 0 ? (
+                    <p className="text-sm text-muted-foreground py-2">Not a member of any Sector yet.</p>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Sector</TableHead>
+                          <TableHead>Role</TableHead>
+                          <TableHead className="w-[80px]"></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {sectorRoles(editTarget).map((r) => {
+                          const s = sectorById[r.sector_id]
+                          const busy = rolesSaving === r.sector_id
+                          return (
+                            <TableRow key={r.sector_id}>
+                              <TableCell>
+                                {s?.name ?? "—"}
+                                <span className="text-muted-foreground text-xs ml-1">
+                                  ({s?.code ?? r.sector_id.slice(0, 6)})
+                                </span>
+                              </TableCell>
+                              <TableCell>
+                                <Select value={r.role} disabled={busy}
+                                  onValueChange={(v) => assignSectorRole(editTarget, r.sector_id, v as SectorRoleName)}>
+                                  <SelectTrigger className="h-8 w-[140px]"><SelectValue /></SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="colonel">Colonel</SelectItem>
+                                    <SelectItem value="captain">Captain</SelectItem>
+                                    <SelectItem value="soldier">Soldier</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </TableCell>
+                              <TableCell>
+                                <Button variant="ghost" size="sm" disabled={busy}
+                                  onClick={() => removeSectorRole(editTarget, r.sector_id)}>
+                                  {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
+                      </TableBody>
+                    </Table>
+                  )}
+
+                  {/* Assign to another sector */}
+                  {(() => {
+                    const taken = new Set(sectorRoles(editTarget).map((r) => r.sector_id))
+                    const available = sectors.filter((s) => s.is_active && !taken.has(s.id))
+                    if (available.length === 0) return null
+                    return (
+                      <div className="mt-3 rounded border border-dashed p-3 space-y-2">
+                        <p className="text-xs text-muted-foreground">Assign to another Sector:</p>
+                        <div className="grid grid-cols-3 gap-2">
+                          <Select value={assignSectorId} onValueChange={setAssignSectorId}>
+                            <SelectTrigger><SelectValue placeholder="Sector" /></SelectTrigger>
+                            <SelectContent>
+                              {available.map((s) => (
+                                <SelectItem key={s.id} value={s.id}>
+                                  {s.name} <span className="text-muted-foreground text-xs">({s.code})</span>
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select value={assignRole} onValueChange={(v) => setAssignRole(v as SectorRoleName)}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="colonel">Colonel</SelectItem>
+                              <SelectItem value="captain">Captain</SelectItem>
+                              <SelectItem value="soldier">Soldier</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Button disabled={!assignSectorId || rolesSaving === assignSectorId}
+                            onClick={() => { if (assignSectorId) assignSectorRole(editTarget, assignSectorId, assignRole) }}>
+                            {rolesSaving === assignSectorId ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                            Assign
+                          </Button>
+                        </div>
+                      </div>
+                    )
+                  })()}
+                </div>
+
+                {rolesError && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{rolesError}</AlertDescription>
+                  </Alert>
                 )}
 
-                {/* Add to another sector */}
-                {(() => {
-                  const taken = new Set(sectorRoles(rolesTarget).map((r) => r.sector_id))
-                  const available = sectors.filter((s) => s.is_active && !taken.has(s.id))
-                  if (available.length === 0) return null
-                  return (
-                    <div className="mt-3 rounded border border-dashed p-3 space-y-2">
-                      <p className="text-xs text-muted-foreground">
-                        Assign to another Sector:
-                      </p>
-                      <div className="grid grid-cols-3 gap-2">
-                        <Select value={assignSectorId} onValueChange={setAssignSectorId}>
-                          <SelectTrigger><SelectValue placeholder="Sector" /></SelectTrigger>
-                          <SelectContent>
-                            {available.map((s) => (
-                              <SelectItem key={s.id} value={s.id}>
-                                {s.name}{" "}
-                                <span className="text-muted-foreground text-xs">({s.code})</span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Select value={assignRole} onValueChange={(v) => setAssignRole(v as SectorRoleName)}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="colonel">Colonel</SelectItem>
-                            <SelectItem value="captain">Captain</SelectItem>
-                            <SelectItem value="soldier">Soldier</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          disabled={!assignSectorId || rolesSaving === assignSectorId}
-                          onClick={() => {
-                            if (!assignSectorId) return
-                            assignSectorRole(rolesTarget, assignSectorId, assignRole)
-                          }}
-                        >
-                          {rolesSaving === assignSectorId ? (
-                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                          ) : null}
-                          Assign
-                        </Button>
-                      </div>
-                    </div>
-                  )
-                })()}
-              </div>
-
-              {rolesError && (
-                <Alert variant="destructive">
-                  <AlertDescription>{rolesError}</AlertDescription>
-                </Alert>
-              )}
-            </div>
+                <div className="flex justify-end pt-2">
+                  <Button variant="outline" onClick={() => setEditTarget(null)}>Done</Button>
+                </div>
+              </TabsContent>
+            </Tabs>
           )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRolesTarget(null)}>
-              Done
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -1003,9 +1078,8 @@ export function UserSettingsPage({ api }: UserSettingsPageProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this user?</AlertDialogTitle>
             <AlertDialogDescription>
-              <strong>{deleteTarget?.username}</strong> will be removed
-              permanently. Their query history and feedback rows stay (audit
-              trail) but they will no longer be able to log in.
+              <strong>{deleteTarget?.username}</strong> will be removed permanently.
+              Their query history stays as an audit trail.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
