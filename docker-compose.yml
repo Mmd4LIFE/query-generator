@@ -73,8 +73,8 @@ services:
       MAX_TOKENS: ${MAX_TOKENS:-2000}
       TEMPERATURE: ${TEMPERATURE:-0.1}
     depends_on:
-      postgres:
-        condition: service_healthy
+      # postgres:
+        # condition: service_healthy
       qdrant:
         condition: service_healthy
     volumes:
@@ -137,5 +137,5 @@ services:
       start_period: 40s
 
 volumes:
-  postgres_data:
+  # postgres_data:
   qdrant_data:
