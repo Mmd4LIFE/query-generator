@@ -440,6 +440,7 @@ async def retrieve_context(
                 "kind": row.kind,
                 "score": score,
                 "distance": 1 - score,
+                "embed_id": str(rid),
             })
 
         # ----------------------------------------------------------------

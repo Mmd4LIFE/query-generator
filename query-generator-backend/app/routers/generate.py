@@ -353,8 +353,8 @@ async def generate_query(
                 }
             } if context_chunks else None,
             context_chunk_ids={
-                "ids": [str(c["point_id"]) for c in context_chunks],
-                "scores": [round(float(c["score"]), 4) for c in context_chunks],
+                "ids": [c["embed_id"] for c in context_chunks if c.get("embed_id")],
+                "scores": [round(float(c["score"]), 4) for c in context_chunks if c.get("embed_id")],
             } if context_chunks else None,
             status="success" if not guardrails_result.violations else "policy_violation"
         )
