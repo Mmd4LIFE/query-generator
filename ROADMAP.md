@@ -73,6 +73,50 @@ Phases are ordered by dependency. Do not start phase N+1 until phase N has shipp
 
 - `tsc --noEmit` exits 0 — no TypeScript errors introduced.
 
+### Done this session (Colonel sector-admin capabilities — 2026-05-24)
+
+**Colonel can create users**
+
+- `app/routers/auth.py` — `POST /auth/users` and `GET /auth/users` gates
+  changed from `require_general` → `require_colonel_anywhere`. All other
+  account mutations (PUT details, PATCH status, DELETE) remain General-only.
+- `components/user-settings-page.tsx` — `ColonelUserView` ships a full
+  **Create User** dialog: Colonel fills username / email / password / full_name,
+  backend creates the account, then `api.assignUserRole(newUser.id, role, activeSectorId)`
+  immediately places the new user in the active Sector as Captain or Soldier.
+  Colonels cannot assign Colonel or higher.
+
+**Sector status panel**
+
+- `components/user-settings-page.tsx` (`ColonelUserView`) — top of page
+  shows three stat cards: **Members**, **Total Queries**, **Total Cost** pulled
+  from `getSectorCostSummary({ groupBy: 'user' })`. Below the cards a per-user
+  cost breakdown table shows each member's query count and spend.
+
+**Multi-access dispatcher (active-sector role routing)**
+
+- `components/user-settings-page.tsx` — `UserSettingsPage` dispatcher now
+  routes on the role the caller holds in the **active sector** (not their
+  globally highest role). A user who is Colonel in Sector X but Captain in
+  Sector Y sees `ColonelUserView` only when Sector X is active; switching to
+  Sector Y shows nothing (no user-management access). Generals always see
+  `GeneralUserView` regardless of the active sector.
+  ```typescript
+  const activeSectorRole = callerIsGeneral
+    ? "general"
+    : userProfile?.sectors?.find(s => s.sector_id === activeSectorId)?.role ?? null
+  ```
+
+**Data loading strategy**
+
+- `ColonelUserView` uses `Promise.allSettled` to load sector members, cost
+  summary, and all users in parallel. Partial failures (e.g. cost API down)
+  degrade gracefully without blocking the members table.
+
+**Verification**
+
+- `tsc --noEmit` exits 0 — no TypeScript errors introduced.
+
 ## Status — Phase 1 backend complete; ready to apply migration + start Phase 2
 
 ### Done

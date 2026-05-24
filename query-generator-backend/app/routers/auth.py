@@ -29,6 +29,7 @@ from app.deps.auth import (
     get_password_hash,
     is_general,
     require_general,
+    require_colonel_anywhere,
 )
 from app.deps.db import get_db
 from app.models.auth import User, UserRole
@@ -161,11 +162,11 @@ async def me(
 async def create_user(
     payload: UserCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_general),
+    current_user: User = Depends(require_colonel_anywhere),
 ):
-    """Create a new user account. No roles are assigned here — use
-    `/v1/sectors/{sid}/members` for sector roles, or `POST
-    /auth/users/{id}/promote-to-general` to make them a General.
+    """Create a new user account (Colonel+ can create accounts; role assignment
+    is done separately via `POST /v1/sectors/{sid}/members`).
+    Generals may additionally call `POST /auth/users/{id}/promote-to-general`.
     """
     dup = (
         await db.execute(
@@ -212,7 +213,7 @@ async def create_user(
 @router.get("/users", response_model=List[UserSchema])
 async def list_users(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_general),
+    current_user: User = Depends(require_colonel_anywhere),
 ):
     stmt = (
         select(User)
