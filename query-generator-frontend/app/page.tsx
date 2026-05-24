@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -54,6 +54,8 @@ export default function QueryGeneratorApp() {
   // by api-client on every sector-scoped request.
   const [sectors, setSectors] = useState<SectorMembership[]>([])
   const [activeSectorId, setActiveSectorId] = useState<string | null>(null)
+  const [pendingCorrectionsCount, setPendingCorrectionsCount] = useState(0)
+  const pendingPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const applySectorContextFromProfile = async (profile: any) => {
     let list: SectorMembership[] = Array.isArray(profile?.sectors) ? profile.sectors : []
@@ -104,6 +106,17 @@ export default function QueryGeneratorApp() {
     if (typeof window !== 'undefined') localStorage.setItem('current_sector_id', sectorId)
   }
 
+  // Poll pending corrections count for Colonel+ — drives the nav badge.
+  const fetchPendingCount = useCallback(async () => {
+    if (!activeSectorId) return
+    try {
+      const res = await api.listCorrections({ status: "pending", limit: 1 })
+      setPendingCorrectionsCount(res.total)
+    } catch {
+      // Silently ignore — badge just won't update
+    }
+  }, [api, activeSectorId])
+
   // Compute a role profile scoped to the ACTIVE sector so that nav items
   // reflect what the user can do in the currently-selected sector, not
   // the highest role they hold across all sectors.
@@ -117,6 +130,20 @@ export default function QueryGeneratorApp() {
 
   // Get user permissions scoped to current sector
   const permissions = getUserPermissions(currentRoleProfile)
+
+  // Start/stop polling when auth or sector changes (Colonel+ only)
+  useEffect(() => {
+    if (!isAuthenticated || !permissions.canApproveKnowledge || !activeSectorId) {
+      setPendingCorrectionsCount(0)
+      if (pendingPollRef.current) clearInterval(pendingPollRef.current)
+      return
+    }
+    fetchPendingCount()
+    pendingPollRef.current = setInterval(fetchPendingCount, 30_000)
+    return () => {
+      if (pendingPollRef.current) clearInterval(pendingPollRef.current)
+    }
+  }, [isAuthenticated, permissions.canApproveKnowledge, activeSectorId, fetchPendingCount])
 
   // Check for existing authentication on component mount
   useEffect(() => {
@@ -366,10 +393,11 @@ export default function QueryGeneratorApp() {
       </header>
 
       <div className="flex min-h-screen">
-        <Navigation 
-          currentPage={currentPage} 
-          onPageChange={setCurrentPage} 
+        <Navigation
+          currentPage={currentPage}
+          onPageChange={setCurrentPage}
           permissions={permissions}
+          pendingCorrectionsCount={pendingCorrectionsCount}
         />
 
         {/* Main Content */}
@@ -404,7 +432,7 @@ export default function QueryGeneratorApp() {
               activeSectorId={activeSectorId}
             />
           )}
-          {currentPage === "corrections" && permissions.canApproveKnowledge && (
+          {currentPage === "corrections" && permissions.canManageCatalogs && (
             <CorrectionsPage
               key={activeSectorId || '_'}
               api={api}

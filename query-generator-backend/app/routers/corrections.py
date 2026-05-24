@@ -166,7 +166,7 @@ async def list_corrections(
     *,
     sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    status_filter: Optional[str] = None,
+    status: Optional[str] = None,
     catalog_id: Optional[uuid.UUID] = None,
     limit: int = 50,
     offset: int = 0,
@@ -174,8 +174,8 @@ async def list_corrections(
     """List corrections in this Sector. Soldiers see all states for
     transparency; only Colonel+ can approve/reject."""
     base = select(Correction).where(Correction.sector_id == sector.sector.id)
-    if status_filter:
-        base = base.where(Correction.status == status_filter)
+    if status:
+        base = base.where(Correction.status == status)
     if catalog_id:
         base = base.where(Correction.catalog_id == catalog_id)
 

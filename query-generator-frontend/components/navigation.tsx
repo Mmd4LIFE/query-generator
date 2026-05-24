@@ -19,9 +19,10 @@ interface NavigationProps {
   currentPage: string
   onPageChange: (page: AppPage) => void
   permissions: ReturnType<typeof getUserPermissions>
+  pendingCorrectionsCount?: number
 }
 
-export function Navigation({ currentPage, onPageChange, permissions }: NavigationProps) {
+export function Navigation({ currentPage, onPageChange, permissions, pendingCorrectionsCount = 0 }: NavigationProps) {
 
   const navItems = [
     {
@@ -46,7 +47,7 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
       id: "corrections" as const,
       label: "Corrections",
       icon: ClipboardCheck,
-      requiresPermission: () => permissions.canApproveKnowledge,
+      requiresPermission: () => permissions.canManageCatalogs,
     },
     {
       id: "sector-settings" as const,
@@ -84,12 +85,16 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
     onPageChange(page)
   }
 
+  // Show pending badge only to Colonel+ who can act on corrections
+  const showBadge = permissions.canApproveKnowledge && pendingCorrectionsCount > 0
+
   const NavContent = () => (
     <div className="space-y-2">
       {navItems.map((item) => {
         if (!item.requiresPermission()) return null
 
         const Icon = item.icon
+        const isCorrections = item.id === "corrections"
         return (
           <Button
             key={item.id}
@@ -97,7 +102,14 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
             className={cn("w-full justify-start", currentPage === item.id ? "" : "bg-transparent")}
             onClick={() => handlePageChange(item.id)}
           >
-            <Icon className="mr-2 h-4 w-4" />
+            <span className="relative mr-2 inline-flex">
+              <Icon className="h-4 w-4" />
+              {isCorrections && showBadge && (
+                <span className="absolute -top-1.5 -right-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-[9px] font-bold text-white leading-none">
+                  {pendingCorrectionsCount > 9 ? "9+" : pendingCorrectionsCount}
+                </span>
+              )}
+            </span>
             {item.label}
           </Button>
         )
@@ -119,6 +131,7 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
             if (!item.requiresPermission()) return null
 
             const Icon = item.icon
+            const isCorrections = item.id === "corrections"
             return (
               <Button
                 key={item.id}
@@ -131,7 +144,14 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
                 onClick={() => handlePageChange(item.id)}
                 title={item.label}
               >
-                <Icon className="h-5 w-5" />
+                <span className="relative inline-flex">
+                  <Icon className="h-5 w-5" />
+                  {isCorrections && showBadge && (
+                    <span className="absolute -top-1.5 -right-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-[9px] font-bold text-white leading-none">
+                      {pendingCorrectionsCount > 9 ? "9+" : pendingCorrectionsCount}
+                    </span>
+                  )}
+                </span>
               </Button>
             )
           })}
