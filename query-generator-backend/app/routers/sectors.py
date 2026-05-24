@@ -228,6 +228,13 @@ async def assign_member(
     if not user or not user.is_active:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Generals hold cross-sector authority — they are never sector members.
+    if is_general(user):
+        raise HTTPException(
+            status_code=400,
+            detail="Generals have global authority and cannot be assigned a sector role",
+        )
+
     # Soft-delete any existing active role in this sector (single role per sector).
     for existing in user.roles:
         if existing.sector_id == ctx.sector.id and existing.deleted_at is None:

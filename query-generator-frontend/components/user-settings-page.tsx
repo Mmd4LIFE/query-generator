@@ -181,7 +181,12 @@ function ColonelUserView({
       if (memberList.status === "fulfilled") setMembers(memberList.value as SectorMember[])
       if (summary.status === "fulfilled") setCostSummary(summary.value)
       if (userList.status === "fulfilled" && Array.isArray(userList.value)) {
-        setAllUsers(userList.value.map((u: any) => ({ id: u.id, username: u.username })))
+        // Generals are cross-sector and must never appear in the sector-member picker.
+        setAllUsers(
+          userList.value
+            .filter((u: any) => !u.is_general)
+            .map((u: any) => ({ id: u.id, username: u.username }))
+        )
       }
     } catch (e: any) {
       setError(e?.message ?? "Failed to load data")
