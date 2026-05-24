@@ -1,21 +1,21 @@
 services:
   # PostgreSQL database (no longer using pgvector)
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-qg}
-      POSTGRES_USER: ${POSTGRES_USER:-qg}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qg}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./query-generator-backend/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-qg} -d ${POSTGRES_DB:-qg}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  # postgres:
+  #   image: postgres:16
+  #   environment:
+  #     POSTGRES_DB: ${POSTGRES_DB:-qg}
+  #     POSTGRES_USER: ${POSTGRES_USER:-qg}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qg}
+  #   ports:
+  #     - "${POSTGRES_PORT:-5432}:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #     - ./query-generator-backend/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-qg} -d ${POSTGRES_DB:-qg}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
 
   # Qdrant vector database
   qdrant:
@@ -42,8 +42,8 @@ services:
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-qg}:${POSTGRES_PASSWORD:-qg}@postgres:5432/${POSTGRES_DB:-qg}
-      POSTGRES_HOST: postgres
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-172.17.0.1}:${POSTGRES_PORT:-5432}/${POSTGRES_DB}
+      POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-qg}
       POSTGRES_USER: ${POSTGRES_USER:-qg}
@@ -73,8 +73,8 @@ services:
       MAX_TOKENS: ${MAX_TOKENS:-2000}
       TEMPERATURE: ${TEMPERATURE:-0.1}
     depends_on:
-      postgres:
-        condition: service_healthy
+      # postgres:
+        # condition: service_healthy
       qdrant:
         condition: service_healthy
     volumes:
@@ -137,5 +137,5 @@ services:
       start_period: 40s
 
 volumes:
-  postgres_data:
+  # postgres_data:
   qdrant_data:

@@ -13,12 +13,16 @@ from app.core.config import settings
 from app.models.base import Base
 
 # Import all models to ensure they're registered with SQLAlchemy
+from app.models.sector import *  # noqa
 from app.models.auth import *  # noqa
 from app.models.catalog import *  # noqa
 from app.models.history import *  # noqa
 from app.models.knowledge import *  # noqa
 from app.models.policies import *  # noqa
 from app.models.vector import *  # noqa
+from app.models.settings import *  # noqa
+from app.models.correction import *  # noqa
+from app.models.audit import *  # noqa
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

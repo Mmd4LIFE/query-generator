@@ -49,10 +49,11 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
       setError("")
     } catch (err: any) {
       console.error("Failed to load catalogs:", err)
-      
-      if (err.message && err.message.includes("roles")) {
-        setError("Access denied: You need 'admin' or 'data_guy' role to access catalogs. Please contact an administrator to assign you the appropriate role.")
-      } else if (err.status === 403) {
+
+      // Sector not resolved yet — parent will remount this component once sector is set.
+      if (err.name === 'SectorRequiredError' || !api.getCurrentSector()) return
+
+      if (err.status === 403) {
         setError("Access denied: Insufficient permissions to view catalogs.")
       } else {
         setError("Failed to load catalogs. Please try again or contact support.")

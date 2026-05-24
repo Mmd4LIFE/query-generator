@@ -1,7 +1,7 @@
 "use client"
 
 import { Button } from "@/components/ui/button"
-import { Database, Zap, Users, History, Settings } from "lucide-react"
+import { Database, Zap, Users, History, Settings, ShieldCheck } from "lucide-react"
 import { cn, getUserPermissions } from "@/lib/utils"
 
 export type AppPage =
@@ -10,6 +10,7 @@ export type AppPage =
   | "users"
   | "history"
   | "settings"
+  | "sectors"
 
 interface NavigationProps {
   currentPage: string
@@ -37,6 +38,13 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
       label: "Manage Catalogs",
       icon: Database,
       requiresPermission: () => permissions.canManageCatalogs,
+    },
+    {
+      id: "sectors" as const,
+      label: "Sectors",
+      icon: ShieldCheck,
+      // General-only — the only role that can create / archive / staff Sectors.
+      requiresPermission: () => permissions.isGeneral,
     },
     {
       id: "users" as const,

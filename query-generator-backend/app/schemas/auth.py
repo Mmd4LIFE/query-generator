@@ -1,5 +1,7 @@
 """
-Authentication and authorization schemas
+Authentication and authorization schemas.
+
+Role vocabulary: general | colonel | captain | soldier.
 """
 import uuid
 from datetime import datetime
@@ -9,7 +11,6 @@ from pydantic import BaseModel, EmailStr, field_validator
 
 
 class UserBase(BaseModel):
-    """Base user schema"""
     username: str
     email: EmailStr
     full_name: Optional[str] = None
@@ -17,12 +18,10 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    """User creation schema"""
     password: str
 
 
 class UserUpdate(BaseModel):
-    """User update schema"""
     email: Optional[EmailStr] = None
     full_name: Optional[str] = None
     is_active: Optional[bool] = None
@@ -30,22 +29,19 @@ class UserUpdate(BaseModel):
 
 
 class UserStatusUpdate(BaseModel):
-    """User status update schema"""
     is_active: bool
 
 
 class UserRoleBase(BaseModel):
-    """Base user role schema"""
-    role_name: str
+    role_name: str  # general | colonel | captain | soldier
+    sector_id: Optional[uuid.UUID] = None  # required unless role_name == 'general'
 
 
 class UserRoleCreate(UserRoleBase):
-    """User role creation schema"""
-    user_id: uuid.UUID
+    user_id: Optional[uuid.UUID] = None  # carried in path on most endpoints
 
 
 class UserRole(UserRoleBase):
-    """User role schema"""
     id: uuid.UUID
     user_id: uuid.UUID
     created_at: datetime
@@ -57,17 +53,15 @@ class UserRole(UserRoleBase):
 
 
 class User(UserBase):
-    """User schema with active roles only"""
     id: uuid.UUID
     created_at: datetime
     updated_at: datetime
     last_login: Optional[datetime] = None
     roles: List[UserRole] = []
 
-    @field_validator('roles', mode='before')
+    @field_validator("roles", mode="before")
     @classmethod
     def filter_active_roles(cls, v):
-        """Filter out deleted roles"""
         if isinstance(v, list):
             return [role for role in v if role.deleted_at is None]
         return v
@@ -76,33 +70,40 @@ class User(UserBase):
         from_attributes = True
 
 
+class SectorMembership(BaseModel):
+    """A user's role inside one sector — embedded in the JWT for fast frontend rendering."""
+    sector_id: uuid.UUID
+    sector_code: str
+    sector_name: str
+    role: str  # colonel | captain | soldier
+
+
 class Token(BaseModel):
-    """Token response schema"""
     access_token: str
     token_type: str
+    is_general: bool
+    sectors: List[SectorMembership]
 
 
 class TokenData(BaseModel):
-    """Token data schema"""
     user_id: Optional[uuid.UUID] = None
 
 
 class LoginRequest(BaseModel):
-    """Login request schema"""
     username: str
     password: str
 
 
 class UserProfile(BaseModel):
-    """User profile schema"""
     id: uuid.UUID
     username: str
     email: EmailStr
     full_name: Optional[str] = None
     is_active: bool
-    roles: List[str]
+    is_general: bool
+    sectors: List[SectorMembership]
     created_at: datetime
     last_login: Optional[datetime] = None
 
     class Config:
-        from_attributes = True 
+        from_attributes = True
