@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Database, User, LogOut, Play, Shield } from "lucide-react"
+import { Database, User, LogOut, Play, Shield, Crown, Star, ShieldCheck, Swords } from "lucide-react"
 import {
   Select,
   SelectContent,
@@ -27,6 +27,14 @@ import { SectorsAdminPage } from "@/components/sectors-admin-page"
 import { getUserPermissions } from "@/lib/utils"
 
 type Page = "generate" | "catalogs" | "users" | "history" | "settings" | "sectors"
+
+function RoleIcon({ role, className = "w-3 h-3" }: { role: string; className?: string }) {
+  const r = role.toLowerCase()
+  if (r === "general") return <span title="General"><Crown className={className} /></span>
+  if (r === "colonel") return <span title="Colonel"><Star className={className} /></span>
+  if (r === "captain") return <span title="Captain"><ShieldCheck className={className} /></span>
+  return <span title="Soldier"><Swords className={className} /></span>
+}
 
 export default function QueryGeneratorApp() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -324,9 +332,9 @@ export default function QueryGeneratorApp() {
                   <SelectContent>
                     {sectors.map((s) => (
                       <SelectItem key={s.sector_id} value={s.sector_id}>
-                        {s.sector_name || s.sector_code}{" "}
-                        <span className="text-muted-foreground text-[10px]">
-                          ({s.role})
+                        <span className="flex items-center gap-1.5">
+                          <RoleIcon role={s.role} className="w-3 h-3 shrink-0" />
+                          {s.sector_name || s.sector_code}
                         </span>
                       </SelectItem>
                     ))}
@@ -336,23 +344,17 @@ export default function QueryGeneratorApp() {
             )}
             {sectors.length === 1 && (
               <Badge variant="outline" className="hidden md:flex items-center space-x-1 text-xs">
-                <Shield className="w-3 h-3" />
+                <RoleIcon role={sectors[0].role} className="w-3 h-3" />
                 <span>{sectors[0].sector_name || sectors[0].sector_code}</span>
-                <span className="text-muted-foreground">· {sectors[0].role}</span>
               </Badge>
             )}
             <Badge variant="secondary" className="hidden sm:flex items-center space-x-1">
-              <User className="w-3 h-3" />
+              <RoleIcon role={permissions.roleDisplayName} className="w-3 h-3" />
               <span>{userProfile?.username || username}</span>
             </Badge>
             <Badge variant="secondary" className="sm:hidden">
-              <User className="w-3 h-3" />
+              <RoleIcon role={permissions.roleDisplayName} className="w-3 h-3" />
             </Badge>
-            {permissions.isAdmin && (
-              <Badge variant="outline" className="text-xs hidden sm:block">
-                {permissions.roleDisplayName}
-              </Badge>
-            )}
             <Button variant="ghost" size="sm" onClick={handleLogout}>
               <LogOut className="w-4 h-4" />
             </Button>
