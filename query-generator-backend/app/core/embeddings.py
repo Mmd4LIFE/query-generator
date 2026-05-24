@@ -1,619 +1,599 @@
 """
-Embeddings processing and chunking
+Embeddings processing — sector-scoped, concrete-FK polymorphism.
+
+What changed vs. the legacy file
+================================
+- **No `entity_id` / `qdrant_point_id`.** Each Embedding row sets exactly one
+  of `{object,note,metric,example,correction}_id`; `Embedding.id` doubles as
+  the Qdrant point ID. See `app/models/vector.py`.
+- **Mandatory `sector_id`.** Derived once from the catalog and stamped on
+  every Embedding row + Qdrant payload. This is the second line of defense
+  against cross-tenant retrieval leaks; the Qdrant client refuses payloads
+  without it.
+- **Mandatory `embed_model`.** Read from the live `embeddings.embed_model`
+  setting (falls back to env). Stamped on every row + payload so retrieval
+  can refuse points embedded with a different model.
+- **Corrections come from `Correction`, not raw feedback.** The Phase-5
+  feedback loop files a pending `Correction`; only `status='approved'`
+  corrections get embedded.
+- **Dedup by (kind, FK), not (catalog_id, content).** Content strings can
+  collide across rows; the FK can't.
+- **Two-phase commit preserved.** PG flush → Qdrant upsert → PG commit;
+  rollback PG + best-effort Qdrant cleanup on failure.
 """
+from __future__ import annotations
+
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import structlog
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.openai_client import generate_embeddings
 from app.core.qdrant_client import qdrant_store
 from app.models.catalog import Catalog, CatalogObject
-from app.models.history import QueryFeedback, QueryHistory
+from app.models.correction import Correction
 from app.models.knowledge import Example, Metric, Note
 from app.models.vector import Embedding
 
 logger = structlog.get_logger()
 
 
+# ---------------------------------------------------------------------------
+# Settings helpers
+# ---------------------------------------------------------------------------
+
+async def _resolve_active_embed_model() -> str:
+    """Read the live `embeddings.embed_model`; fall back to env default.
+
+    Kept in sync with `retrieval._get_active_embed_model` so the same model
+    that writes also reads.
+    """
+    try:
+        from app.core.settings_service import get_value_standalone
+        v = await get_value_standalone("embeddings.embed_model", sector_id=None)
+        if isinstance(v, str) and v.strip():
+            return v
+    except Exception as exc:
+        logger.warning("embeddings.embed_model_setting_unreadable", error=str(exc))
+    return settings.embed_model
+
+
+# ---------------------------------------------------------------------------
+# Chunk text builders (pure functions)
+# ---------------------------------------------------------------------------
+
 def create_table_chunk(
     catalog_name: str,
     schema_name: str,
     table_name: str,
     columns: List[CatalogObject],
-    comment: Optional[str] = None
+    comment: Optional[str] = None,
 ) -> str:
-    """
-    Create a text chunk for a table with its columns.
-    
-    Args:
-        catalog_name: Name of the catalog
-        schema_name: Schema name
-        table_name: Table name
-        columns: List of column objects
-        comment: Table comment
-        
-    Returns:
-        Formatted text chunk
-    """
-    chunk_parts = [
-        f"Table: {schema_name}.{table_name}",
-        f"Catalog: {catalog_name}"
-    ]
-    
+    parts = [f"Table: {schema_name}.{table_name}", f"Catalog: {catalog_name}"]
     if comment:
-        chunk_parts.append(f"Description: {comment}")
-    
-    # Add primary keys
-    pk_columns = [col.column_name for col in columns if col.is_primary_key]
-    if pk_columns:
-        chunk_parts.append(f"Primary Key: {', '.join(pk_columns)}")
-    
-    # Add foreign keys
-    fk_columns = [col.column_name for col in columns if col.is_foreign_key]
-    if fk_columns:
-        chunk_parts.append(f"Foreign Keys: {', '.join(fk_columns)}")
-    
-    # Add column details
-    chunk_parts.append("Columns:")
-    for col in columns:
-        col_desc = f"  - {col.column_name} ({col.data_type})"
-        if not col.is_nullable:
-            col_desc += " NOT NULL"
-        if col.comment:
-            col_desc += f" -- {col.comment}"
-        chunk_parts.append(col_desc)
-    
-    return "\n".join(chunk_parts)
+        parts.append(f"Description: {comment}")
+    pk = [c.column_name for c in columns if c.is_primary_key]
+    if pk:
+        parts.append(f"Primary Key: {', '.join(pk)}")
+    fk = [c.column_name for c in columns if c.is_foreign_key]
+    if fk:
+        parts.append(f"Foreign Keys: {', '.join(fk)}")
+    parts.append("Columns:")
+    for c in columns:
+        col = f"  - {c.column_name} ({c.data_type})"
+        if not c.is_nullable:
+            col += " NOT NULL"
+        if c.comment:
+            col += f" -- {c.comment}"
+        parts.append(col)
+    return "\n".join(parts)
 
 
 def create_note_chunk(note: Note) -> str:
-    """Create a text chunk for a note."""
-    chunk_parts = [
-        f"Note: {note.title}",
-        f"Content: {note.content}"
-    ]
-    
+    parts = [f"Note: {note.title}", f"Content: {note.content}"]
     if note.tags:
-        chunk_parts.append(f"Tags: {', '.join(note.tags)}")
-    
-    return "\n".join(chunk_parts)
+        parts.append(f"Tags: {', '.join(note.tags)}")
+    return "\n".join(parts)
 
 
 def create_metric_chunk(metric: Metric) -> str:
-    """Create a text chunk for a metric."""
-    chunk_parts = [
+    parts = [
         f"Metric: {metric.name}",
         f"Description: {metric.description}",
-        f"Expression: {metric.expression}"
+        f"Expression: {metric.expression}",
     ]
-    
     if metric.engine:
-        chunk_parts.append(f"Engine: {metric.engine}")
-    
+        parts.append(f"Engine: {metric.engine}")
     if metric.tags:
-        chunk_parts.append(f"Tags: {', '.join(metric.tags)}")
-    
-    return "\n".join(chunk_parts)
-
-
-def create_correction_chunk(
-    question: str,
-    bad_sql: Optional[str],
-    suggested_sql: Optional[str],
-    improvement_notes: Optional[str],
-    engine: Optional[str] = None
-) -> str:
-    """Create a text chunk for a user correction (feedback)."""
-    chunk_parts = [
-        "User Correction",
-        f"Question: {question}",
-    ]
-    if engine:
-        chunk_parts.append(f"Engine: {engine}")
-    if improvement_notes:
-        chunk_parts.append(f"Issue / Rule: {improvement_notes}")
-    if bad_sql:
-        chunk_parts.append(f"Original (incorrect) SQL: {bad_sql}")
-    if suggested_sql:
-        chunk_parts.append(f"Correct SQL: {suggested_sql}")
-    return "\n".join(chunk_parts)
+        parts.append(f"Tags: {', '.join(metric.tags)}")
+    return "\n".join(parts)
 
 
 def create_example_chunk(example: Example) -> str:
-    """Create a text chunk for an example."""
-    chunk_parts = [
+    parts = [
         f"Example: {example.title}",
         f"Description: {example.description}",
         f"Engine: {example.engine}",
-        f"SQL: {example.sql_snippet}"
+        f"SQL: {example.sql_snippet}",
     ]
-    
     if example.tags:
-        chunk_parts.append(f"Tags: {', '.join(example.tags)}")
-    
-    return "\n".join(chunk_parts)
+        parts.append(f"Tags: {', '.join(example.tags)}")
+    return "\n".join(parts)
 
 
-async def process_catalog_objects(
+def create_correction_chunk(correction: Correction) -> str:
+    parts = [
+        "User Correction",
+        f"Question: {correction.question}",
+        f"Correct SQL: {correction.correct_sql}",
+    ]
+    if correction.notes:
+        parts.append(f"Issue / Rule: {correction.notes}")
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Chunk builders — return (kind, fk_field, fk_id, content, metadata)
+# ---------------------------------------------------------------------------
+
+_FK_FIELD_BY_KIND = {
+    "object":     "object_id",
+    "note":       "note_id",
+    "metric":     "metric_id",
+    "example":    "example_id",
+    "correction": "correction_id",
+}
+
+
+async def _build_object_chunks(
     db: AsyncSession,
-    catalog: Catalog
-) -> List[Tuple[str, Dict[str, Any]]]:
-    """
-    Process catalog objects into text chunks for embedding.
-    
-    Args:
-        db: Database session
-        catalog: Catalog to process
-        
-    Returns:
-        List of (content, metadata) tuples
-    """
-    logger.info("Processing catalog objects", catalog_id=catalog.id)
-    
-    # Get all objects for this catalog
+    catalog: Catalog,
+) -> List[Tuple[str, str, uuid.UUID, str, Dict[str, Any]]]:
+    """Build one chunk per (schema, table) with attached columns."""
     stmt = select(CatalogObject).where(CatalogObject.catalog_id == catalog.id)
-    result = await db.execute(stmt)
-    objects = result.scalars().all()
-    
-    # Group objects by table
-    tables = {}
-    for obj in objects:
+    rows = (await db.execute(stmt)).scalars().all()
+
+    tables: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for obj in rows:
         if obj.object_type == "table":
             key = (obj.schema_name, obj.table_name)
-            if key not in tables:
-                tables[key] = {"table": obj, "columns": []}
+            tables.setdefault(key, {"table": None, "columns": []})["table"] = obj
         elif obj.object_type == "column":
             key = (obj.schema_name, obj.table_name)
-            if key not in tables:
-                tables[key] = {"table": None, "columns": []}
-            tables[key]["columns"].append(obj)
-    
-    # Create chunks for each table
-    chunks = []
-    for (schema_name, table_name), table_data in tables.items():
-        if not table_data["columns"]:
+            tables.setdefault(key, {"table": None, "columns": []})["columns"].append(obj)
+
+    out: List[Tuple[str, str, uuid.UUID, str, Dict[str, Any]]] = []
+    for (schema_name, table_name), bundle in tables.items():
+        table_obj: Optional[CatalogObject] = bundle["table"]
+        if table_obj is None or not bundle["columns"]:
             continue
-            
         content = create_table_chunk(
             catalog.catalog_name,
             schema_name,
             table_name,
-            table_data["columns"],
-            table_data["table"].comment if table_data["table"] else None
+            bundle["columns"],
+            table_obj.comment,
         )
-        
         metadata = {
-            "catalog_id": str(catalog.id),
-            "kind": "object",
             "schema": schema_name,
             "table": table_name,
-            "object_type": "table"
+            "object_type": "table",
         }
-        
-        # Add entity_id if we have the table object
-        if table_data["table"]:
-            metadata["entity_id"] = str(table_data["table"].id)
-        
-        chunks.append((content, metadata))
-    
-    logger.info("Created table chunks", count=len(chunks))
-    return chunks
+        out.append(("object", "object_id", table_obj.id, content, metadata))
+    return out
 
 
-async def process_knowledge_items(
+async def _build_knowledge_chunks(
     db: AsyncSession,
-    catalog_id: Optional[uuid.UUID] = None
-) -> List[Tuple[str, Dict[str, Any]]]:
-    """
-    Process approved knowledge items into text chunks.
-    
-    Args:
-        db: Database session
-        catalog_id: Optional catalog ID to filter by
-        
-    Returns:
-        List of (content, metadata) tuples
-    """
-    chunks = []
-    
-    # Process notes (only approved notes for embeddings)
-    stmt = select(Note).where(Note.status == "approved")
-    if catalog_id:
-        stmt = stmt.where(Note.catalog_id == catalog_id)
-    result = await db.execute(stmt)
-    notes = result.scalars().all()
-    
-    for note in notes:
-        content = create_note_chunk(note)
-        metadata = {
-            "catalog_id": str(note.catalog_id) if note.catalog_id else None,
-            "kind": "note",
-            "entity_id": str(note.id),
-            "title": note.title
-        }
-        chunks.append((content, metadata))
-    
-    # Process metrics (only approved metrics for embeddings)
-    stmt = select(Metric).where(Metric.status == "approved")
-    if catalog_id:
-        stmt = stmt.where(Metric.catalog_id == catalog_id)
-    result = await db.execute(stmt)
-    metrics = result.scalars().all()
-    
-    for metric in metrics:
-        content = create_metric_chunk(metric)
-        metadata = {
-            "catalog_id": str(metric.catalog_id) if metric.catalog_id else None,
-            "kind": "metric",
-            "entity_id": str(metric.id),
-            "name": metric.name
-        }
-        chunks.append((content, metadata))
-    
-    # Process examples (only approved examples for embeddings)
-    stmt = select(Example).where(Example.status == "approved")
-    if catalog_id:
-        stmt = stmt.where(Example.catalog_id == catalog_id)
-    result = await db.execute(stmt)
-    examples = result.scalars().all()
-    
-    for example in examples:
-        content = create_example_chunk(example)
-        metadata = {
-            "catalog_id": str(example.catalog_id) if example.catalog_id else None,
-            "kind": "example",
-            "entity_id": str(example.id),
-            "title": example.title,
-            "engine": example.engine
-        }
-        chunks.append((content, metadata))
-    
-    logger.info("Created knowledge chunks", count=len(chunks))
-    return chunks
+    catalog_id: uuid.UUID,
+) -> List[Tuple[str, str, uuid.UUID, str, Dict[str, Any]]]:
+    """Approved notes/metrics/examples bound to this catalog *or* sector-global."""
+    out: List[Tuple[str, str, uuid.UUID, str, Dict[str, Any]]] = []
 
-
-async def process_feedback_items(
-    db: AsyncSession,
-    catalog_id: uuid.UUID
-) -> List[Tuple[str, Dict[str, Any]]]:
-    """
-    Turn actionable user feedback (suggested_sql or improvement_notes) into
-    correction chunks the retriever can surface for future similar questions.
-    """
-    # Join feedback with the originating history so we know the question
-    # and the (incorrect) SQL the user was correcting.
-    stmt = (
-        select(QueryFeedback, QueryHistory)
-        .join(QueryHistory, QueryFeedback.history_id == QueryHistory.id)
-        .where(QueryHistory.catalog_id == catalog_id)
-    )
-    result = await db.execute(stmt)
-    rows = result.all()
-
-    chunks = []
-    for feedback, history in rows:
-        # Only embed feedback that contains a teachable correction.
-        if not feedback.suggested_sql and not feedback.improvement_notes:
-            continue
-
-        content = create_correction_chunk(
-            question=history.question,
-            bad_sql=history.generated_sql,
-            suggested_sql=feedback.suggested_sql,
-            improvement_notes=feedback.improvement_notes,
-            engine=history.engine,
+    # Notes — catalog-bound or sector-global.
+    notes = (await db.execute(
+        select(Note).where(
+            Note.status == "approved",
+            or_(Note.catalog_id == catalog_id, Note.catalog_id.is_(None)),
         )
-        metadata = {
-            "catalog_id": str(catalog_id),
-            "kind": "correction",
-            "entity_id": str(feedback.id),
-            "history_id": str(history.id),
-            "engine": history.engine,
-        }
-        chunks.append((content, metadata))
+    )).scalars().all()
+    for n in notes:
+        out.append((
+            "note", "note_id", n.id,
+            create_note_chunk(n),
+            {"title": n.title},
+        ))
 
-    logger.info("Created correction chunks", count=len(chunks))
-    return chunks
+    # Metrics — same scoping rule.
+    metrics = (await db.execute(
+        select(Metric).where(
+            Metric.status == "approved",
+            or_(Metric.catalog_id == catalog_id, Metric.catalog_id.is_(None)),
+        )
+    )).scalars().all()
+    for m in metrics:
+        out.append((
+            "metric", "metric_id", m.id,
+            create_metric_chunk(m),
+            {"name": m.name, "engine": m.engine},
+        ))
 
+    # Examples — same scoping rule.
+    examples = (await db.execute(
+        select(Example).where(
+            Example.status == "approved",
+            or_(Example.catalog_id == catalog_id, Example.catalog_id.is_(None)),
+        )
+    )).scalars().all()
+    for e in examples:
+        out.append((
+            "example", "example_id", e.id,
+            create_example_chunk(e),
+            {"title": e.title, "engine": e.engine},
+        ))
+
+    return out
+
+
+async def _build_correction_chunks(
+    db: AsyncSession,
+    catalog_id: uuid.UUID,
+) -> List[Tuple[str, str, uuid.UUID, str, Dict[str, Any]]]:
+    """Approved Corrections for this catalog. Pending/rejected never embedded."""
+    stmt = select(Correction).where(
+        Correction.catalog_id == catalog_id,
+        Correction.status == "approved",
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return [
+        (
+            "correction", "correction_id", c.id,
+            create_correction_chunk(c),
+            {"history_id": str(c.history_id)},
+        )
+        for c in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Main: (re)build embeddings for a catalog
+# ---------------------------------------------------------------------------
 
 async def create_embeddings_for_catalog(
     db: AsyncSession,
     catalog_id: uuid.UUID,
-    force: bool = False
+    force: bool = False,
 ) -> Tuple[int, int]:
     """
-    Create embeddings for a catalog and its knowledge items.
-    
-    Args:
-        db: Database session
-        catalog_id: Catalog ID
-        force: Whether to recreate existing embeddings
-        
+    Build (or rebuild) Postgres + Qdrant embeddings for a catalog.
+
+    Two-phase commit:
+      1. Mutate Postgres state (flush, not commit).
+      2. Upsert to Qdrant.
+      3. Commit Postgres.
+
+    On Qdrant failure, rollback Postgres and best-effort-delete any
+    Qdrant points already written.
+
     Returns:
-        Tuple of (created_count, updated_count)
+        (created_count, updated_count)
     """
-    logger.info("Creating embeddings for catalog", catalog_id=catalog_id, force=force)
-    
-    # Get catalog
-    stmt = select(Catalog).where(Catalog.id == catalog_id)
-    result = await db.execute(stmt)
-    catalog = result.scalar_one_or_none()
-    if not catalog:
+    logger.info("embeddings.start", catalog_id=str(catalog_id), force=force)
+
+    catalog = (
+        await db.execute(select(Catalog).where(Catalog.id == catalog_id))
+    ).scalar_one_or_none()
+    if catalog is None:
         raise ValueError(f"Catalog {catalog_id} not found")
-    
-    # Delete existing embeddings if force is True
+
+    sector_id = catalog.sector_id
+    embed_model = await _resolve_active_embed_model()
+
+    # ---- Force-rebuild path ----
     if force:
         try:
-            # Phase 1: Delete from PostgreSQL (not committed yet)
-            stmt = delete(Embedding).where(Embedding.catalog_id == catalog_id)
-            result = await db.execute(stmt)
-            deleted_count = result.rowcount
-            
-            # Phase 2: Delete from Qdrant (if this fails, PostgreSQL will rollback)
-            await qdrant_store.delete_by_catalog(catalog_id)
-            
-            # Phase 3: Commit PostgreSQL transaction
+            await db.execute(delete(Embedding).where(Embedding.catalog_id == catalog_id))
+            await qdrant_store.delete_by_catalog(
+                sector_id=sector_id, catalog_id=catalog_id
+            )
             await db.commit()
-            logger.info(
-                "✅ Force delete successful - both databases in sync",
-                catalog_id=catalog_id,
-                deleted=deleted_count
-            )
-        except Exception as e:
-            logger.error(
-                "❌ Error during force delete - rolling back PostgreSQL transaction",
-                error=str(e),
-                catalog_id=catalog_id
-            )
+            logger.info("embeddings.force_clear_ok", catalog_id=str(catalog_id))
+        except Exception as exc:
             await db.rollback()
-            raise
-    
-    # Always clean up rejected embeddings
-    deleted_count = await cleanup_rejected_embeddings(db, catalog_id)
-    
-    # Get all chunks to embed
-    object_chunks = await process_catalog_objects(db, catalog)
-    knowledge_chunks = await process_knowledge_items(db, catalog_id)
-    feedback_chunks = await process_feedback_items(db, catalog_id)
-    all_chunks = object_chunks + knowledge_chunks + feedback_chunks
-    
-    if not all_chunks:
-        logger.warning("No chunks to embed", catalog_id=catalog_id)
-        return 0, 0
-    
-    # Generate embeddings
-    contents = [chunk[0] for chunk in all_chunks]
-    embeddings = await generate_embeddings(contents)
-    
-    if len(embeddings) != len(all_chunks):
-        raise ValueError("Embedding count mismatch")
-    
-    # Store embeddings with proper transaction handling
-    created_count = 0
-    updated_count = 0
-    qdrant_points_to_insert = []  # Collect all Qdrant operations
-    
-    try:
-        # Phase 1: Prepare PostgreSQL records (not committed yet)
-        for (content, chunk_metadata), embedding in zip(all_chunks, embeddings):
-            # Check if embedding already exists
-            stmt = select(Embedding).where(
-                Embedding.catalog_id == catalog_id,
-                Embedding.content == content
+            logger.error(
+                "embeddings.force_clear_failed",
+                error=str(exc),
+                catalog_id=str(catalog_id),
             )
-            result = await db.execute(stmt)
-            existing = result.scalar_one_or_none()
-            
-            if existing:
-                # Update existing in PostgreSQL
-                existing.embedding_metadata = chunk_metadata
-                
-                # Update entity_id (polymorphic reference)
-                if "entity_id" in chunk_metadata:
-                    existing.entity_id = uuid.UUID(chunk_metadata["entity_id"])
-                
-                # Prepare Qdrant update
-                qdrant_payload = {
-                    "catalog_id": str(catalog_id),
-                    "kind": chunk_metadata["kind"],
-                    "metadata": chunk_metadata
-                }
-                qdrant_points_to_insert.append((existing.id, embedding, qdrant_payload))
-                updated_count += 1
-            else:
-                # Create new in PostgreSQL
-                db_embedding = Embedding(
-                    content=content,
-                    kind=chunk_metadata["kind"],
-                    catalog_id=catalog_id,
-                    embedding_metadata=chunk_metadata
+            raise
+
+    # Always clean up rejected/orphaned embeddings before reindexing.
+    await cleanup_rejected_embeddings(db, catalog_id)
+
+    # ---- Build chunk set ----
+    chunks: List[Tuple[str, str, uuid.UUID, str, Dict[str, Any]]] = []
+    chunks.extend(await _build_object_chunks(db, catalog))
+    chunks.extend(await _build_knowledge_chunks(db, catalog_id))
+    chunks.extend(await _build_correction_chunks(db, catalog_id))
+
+    if not chunks:
+        logger.warning("embeddings.no_chunks", catalog_id=str(catalog_id))
+        return 0, 0
+
+    # ---- Embed ----
+    contents = [c[3] for c in chunks]
+    vectors = await generate_embeddings(contents, model=embed_model)
+    if len(vectors) != len(chunks):
+        raise ValueError(
+            f"Embedding count mismatch: {len(vectors)} vectors for {len(chunks)} chunks"
+        )
+
+    # ---- Upsert into Postgres (flush only — commit after Qdrant succeeds) ----
+    created = 0
+    updated = 0
+    qdrant_payload: List[Tuple[uuid.UUID, List[float], Dict[str, Any]]] = []
+
+    try:
+        for (kind, fk_field, fk_id, content, meta), vector in zip(chunks, vectors):
+            existing = (await db.execute(
+                select(Embedding).where(
+                    Embedding.kind == kind,
+                    getattr(Embedding, fk_field) == fk_id,
                 )
-                
-                # Set entity_id (polymorphic reference)
-                if "entity_id" in chunk_metadata:
-                    db_embedding.entity_id = uuid.UUID(chunk_metadata["entity_id"])
-                
-                db.add(db_embedding)
-                await db.flush()  # Get the ID but DON'T commit yet
-                
-                # Prepare Qdrant insert
-                qdrant_payload = {
-                    "catalog_id": str(catalog_id),
-                    "kind": chunk_metadata["kind"],
-                    "metadata": chunk_metadata
-                }
-                qdrant_points_to_insert.append((db_embedding.id, embedding, qdrant_payload))
-                created_count += 1
-        
-        # Phase 2: Insert all data to Qdrant (if this fails, PostgreSQL will rollback)
-        logger.info("Inserting to Qdrant", count=len(qdrant_points_to_insert))
-        point_ids = await qdrant_store.upsert_embeddings_batch(qdrant_points_to_insert)
-        
-        # Phase 3: Update PostgreSQL records with Qdrant point IDs
-        for i, (embedding_id, _, _) in enumerate(qdrant_points_to_insert):
-            stmt = select(Embedding).where(Embedding.id == embedding_id)
-            result = await db.execute(stmt)
-            embedding_record = result.scalar_one()
-            embedding_record.qdrant_point_id = point_ids[i]
-        
-        # Phase 4: Commit PostgreSQL transaction (both DBs now in sync)
+            )).scalar_one_or_none()
+
+            if existing is not None:
+                existing.content = content
+                existing.embedding_metadata = meta
+                existing.sector_id = sector_id
+                existing.catalog_id = catalog_id
+                existing.embed_model = embed_model
+                emb_id = existing.id
+                updated += 1
+            else:
+                row = Embedding(
+                    content=content,
+                    kind=kind,
+                    sector_id=sector_id,
+                    catalog_id=catalog_id,
+                    embed_model=embed_model,
+                    embedding_metadata=meta,
+                )
+                setattr(row, fk_field, fk_id)
+                db.add(row)
+                await db.flush()
+                emb_id = row.id
+                created += 1
+
+            qdrant_payload.append((
+                emb_id,
+                vector,
+                {
+                    "sector_id":   str(sector_id),
+                    "catalog_id":  str(catalog_id),
+                    "kind":        kind,
+                    "embed_model": embed_model,
+                    "metadata":    meta,
+                },
+            ))
+
+        # ---- Qdrant upsert ----
+        await qdrant_store.upsert_embeddings_batch(qdrant_payload)
         await db.commit()
         logger.info(
-            "✅ Transaction committed successfully - both databases in sync",
-            catalog_id=catalog_id,
-            created=created_count,
-            updated=updated_count
+            "embeddings.committed",
+            catalog_id=str(catalog_id),
+            sector_id=str(sector_id),
+            embed_model=embed_model,
+            created=created,
+            updated=updated,
         )
-        
-    except Exception as e:
-        # Rollback PostgreSQL if Qdrant insertion fails
+        return created, updated
+
+    except Exception as exc:
         logger.error(
-            "❌ Error during embedding insertion - rolling back PostgreSQL transaction",
-            error=str(e),
-            catalog_id=catalog_id
+            "embeddings.failed_rolling_back",
+            catalog_id=str(catalog_id),
+            error=str(exc),
         )
         await db.rollback()
-        
-        # Attempt to clean up any Qdrant points that may have been inserted
-        if qdrant_points_to_insert:
+        # Best-effort Qdrant cleanup for any points already written.
+        if qdrant_payload:
             try:
-                embedding_ids = [emb_id for emb_id, _, _ in qdrant_points_to_insert]
-                await qdrant_store.delete_batch(embedding_ids)
-                logger.info("Cleaned up Qdrant points after rollback", count=len(embedding_ids))
-            except Exception as cleanup_error:
-                logger.error("Failed to clean up Qdrant points", error=str(cleanup_error))
-        
-        raise  # Re-raise the original exception
-    
-    logger.info(
-        "Embeddings created/updated",
-        catalog_id=catalog_id,
-        created=created_count,
-        updated=updated_count
-    )
-    
-    return created_count, updated_count
+                await qdrant_store.delete_batch([p[0] for p in qdrant_payload])
+                logger.info("embeddings.qdrant_cleaned_after_rollback",
+                            count=len(qdrant_payload))
+            except Exception as cleanup_exc:
+                logger.error("embeddings.qdrant_cleanup_failed",
+                             error=str(cleanup_exc))
+        raise
 
+
+# ---------------------------------------------------------------------------
+# Cleanup: drop embeddings for rejected knowledge / corrections
+# ---------------------------------------------------------------------------
 
 async def cleanup_rejected_embeddings(
     db: AsyncSession,
-    catalog_id: uuid.UUID
+    catalog_id: uuid.UUID,
 ) -> int:
     """
-    Remove embeddings for rejected knowledge items.
-    
-    Args:
-        db: Database session
-        catalog_id: Catalog ID to clean up
-        
-    Returns:
-        Number of embeddings deleted
+    Remove embeddings whose source knowledge or correction is no longer
+    `approved` (rejected, reverted to pending, or hard-deleted).
+
+    Uses concrete FK columns — one query per kind, then one batched Qdrant
+    delete.
     """
-    logger.info("Cleaning up rejected embeddings", catalog_id=catalog_id)
-    
-    # Get all rejected notes for this catalog
-    stmt = select(Note).where(
-        Note.catalog_id == catalog_id,
-        Note.status.in_(["rejected", "rejectd"])  # Handle typo in status
-    )
-    result = await db.execute(stmt)
-    rejected_notes = result.scalars().all()
-    
-    # Get all rejected metrics for this catalog
-    stmt = select(Metric).where(
-        Metric.catalog_id == catalog_id,
-        Metric.status.in_(["rejected", "rejectd"])
-    )
-    result = await db.execute(stmt)
-    rejected_metrics = result.scalars().all()
-    
-    # Get all rejected examples for this catalog
-    stmt = select(Example).where(
-        Example.catalog_id == catalog_id,
-        Example.status.in_(["rejected", "rejectd"])
-    )
-    result = await db.execute(stmt)
-    rejected_examples = result.scalars().all()
-    
-    deleted_count = 0
-    embedding_ids_to_delete = []
-    
+    logger.info("embeddings.cleanup_start", catalog_id=str(catalog_id))
+
+    to_delete_ids: List[uuid.UUID] = []
+
+    # Collect Embedding IDs whose owning row is no longer approved.
+    rejection_queries = [
+        # Notes
+        select(Embedding.id)
+        .join(Note, Embedding.note_id == Note.id)
+        .where(Embedding.catalog_id == catalog_id, Note.status != "approved"),
+        # Metrics
+        select(Embedding.id)
+        .join(Metric, Embedding.metric_id == Metric.id)
+        .where(Embedding.catalog_id == catalog_id, Metric.status != "approved"),
+        # Examples
+        select(Embedding.id)
+        .join(Example, Embedding.example_id == Example.id)
+        .where(Embedding.catalog_id == catalog_id, Example.status != "approved"),
+        # Corrections
+        select(Embedding.id)
+        .join(Correction, Embedding.correction_id == Correction.id)
+        .where(Embedding.catalog_id == catalog_id, Correction.status != "approved"),
+    ]
+    for q in rejection_queries:
+        rows = (await db.execute(q)).scalars().all()
+        to_delete_ids.extend(rows)
+
+    if not to_delete_ids:
+        logger.info("embeddings.cleanup_nothing_to_do", catalog_id=str(catalog_id))
+        return 0
+
     try:
-        # Phase 1: Collect all embeddings to delete (using polymorphic entity_id)
-        for note in rejected_notes:
-            stmt = select(Embedding).where(
-                Embedding.entity_id == note.id,
-                Embedding.kind == "note"
-            )
-            result = await db.execute(stmt)
-            embeddings_to_delete = result.scalars().all()
-            embedding_ids_to_delete.extend([emb.id for emb in embeddings_to_delete])
-            
-            stmt = delete(Embedding).where(
-                Embedding.entity_id == note.id,
-                Embedding.kind == "note"
-            )
-            result = await db.execute(stmt)
-            deleted_count += result.rowcount
-        
-        for metric in rejected_metrics:
-            stmt = select(Embedding).where(
-                Embedding.entity_id == metric.id,
-                Embedding.kind == "metric"
-            )
-            result = await db.execute(stmt)
-            embeddings_to_delete = result.scalars().all()
-            embedding_ids_to_delete.extend([emb.id for emb in embeddings_to_delete])
-            
-            stmt = delete(Embedding).where(
-                Embedding.entity_id == metric.id,
-                Embedding.kind == "metric"
-            )
-            result = await db.execute(stmt)
-            deleted_count += result.rowcount
-        
-        for example in rejected_examples:
-            stmt = select(Embedding).where(
-                Embedding.entity_id == example.id,
-                Embedding.kind == "example"
-            )
-            result = await db.execute(stmt)
-            embeddings_to_delete = result.scalars().all()
-            embedding_ids_to_delete.extend([emb.id for emb in embeddings_to_delete])
-            
-            stmt = delete(Embedding).where(
-                Embedding.entity_id == example.id,
-                Embedding.kind == "example"
-            )
-            result = await db.execute(stmt)
-            deleted_count += result.rowcount
-        
-        # Phase 2: Delete from Qdrant (if this fails, PostgreSQL will rollback)
-        if embedding_ids_to_delete:
-            logger.info("Deleting from Qdrant", count=len(embedding_ids_to_delete))
-            await qdrant_store.delete_batch(embedding_ids_to_delete)
-        
-        # Phase 3: Commit PostgreSQL transaction
+        await db.execute(delete(Embedding).where(Embedding.id.in_(to_delete_ids)))
+        await qdrant_store.delete_batch(to_delete_ids)
         await db.commit()
-        logger.info("✅ Deletion transaction committed - both databases in sync", deleted=deleted_count)
-        
-    except Exception as e:
-        # Rollback PostgreSQL if Qdrant deletion fails
-        logger.error(
-            "❌ Error during embedding deletion - rolling back PostgreSQL transaction",
-            error=str(e),
-            catalog_id=catalog_id
-        )
+        logger.info("embeddings.cleanup_committed",
+                    catalog_id=str(catalog_id), deleted=len(to_delete_ids))
+        return len(to_delete_ids)
+    except Exception as exc:
+        logger.error("embeddings.cleanup_failed",
+                     catalog_id=str(catalog_id), error=str(exc))
         await db.rollback()
-        raise  # Re-raise the original exception
-    
-    logger.info(
-        "Rejected embeddings cleaned up",
-        catalog_id=catalog_id,
-        deleted_count=deleted_count
-    )
-    
-    return deleted_count 
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Single-row embedding helpers — used by approve-on-write paths
+# ---------------------------------------------------------------------------
+
+async def embed_one_knowledge_row(
+    db: AsyncSession,
+    *,
+    kind: str,
+    row: Any,
+) -> Optional[uuid.UUID]:
+    """
+    Embed (or re-embed) a single approved knowledge / correction row.
+
+    Used by approval handlers to make a single newly-approved item searchable
+    immediately, without a full catalog reindex.
+
+    Returns the Embedding.id, or None if the row's status isn't 'approved'.
+    """
+    if kind not in _FK_FIELD_BY_KIND or kind == "object":
+        raise ValueError(f"embed_one_knowledge_row: unsupported kind {kind!r}")
+
+    status = getattr(row, "status", None)
+    if status != "approved":
+        return None
+
+    sector_id: uuid.UUID = row.sector_id
+    catalog_id: Optional[uuid.UUID] = getattr(row, "catalog_id", None)
+    embed_model = await _resolve_active_embed_model()
+
+    if kind == "note":
+        content = create_note_chunk(row)
+        meta = {"title": row.title}
+    elif kind == "metric":
+        content = create_metric_chunk(row)
+        meta = {"name": row.name, "engine": row.engine}
+    elif kind == "example":
+        content = create_example_chunk(row)
+        meta = {"title": row.title, "engine": row.engine}
+    elif kind == "correction":
+        content = create_correction_chunk(row)
+        meta = {"history_id": str(row.history_id)}
+    else:  # pragma: no cover
+        raise AssertionError(f"unreachable kind {kind!r}")
+
+    fk_field = _FK_FIELD_BY_KIND[kind]
+
+    # Upsert by (kind, fk).
+    existing = (await db.execute(
+        select(Embedding).where(
+            Embedding.kind == kind,
+            getattr(Embedding, fk_field) == row.id,
+        )
+    )).scalar_one_or_none()
+
+    [vector] = await generate_embeddings([content], model=embed_model)
+
+    try:
+        if existing is not None:
+            existing.content = content
+            existing.embedding_metadata = meta
+            existing.sector_id = sector_id
+            existing.catalog_id = catalog_id
+            existing.embed_model = embed_model
+            emb_id = existing.id
+        else:
+            new_row = Embedding(
+                content=content,
+                kind=kind,
+                sector_id=sector_id,
+                catalog_id=catalog_id,
+                embed_model=embed_model,
+                embedding_metadata=meta,
+            )
+            setattr(new_row, fk_field, row.id)
+            db.add(new_row)
+            await db.flush()
+            emb_id = new_row.id
+
+        await qdrant_store.upsert_embedding(
+            embedding_id=emb_id,
+            vector=vector,
+            payload={
+                "sector_id":   str(sector_id),
+                "catalog_id":  str(catalog_id) if catalog_id else None,
+                "kind":        kind,
+                "embed_model": embed_model,
+                "metadata":    meta,
+            },
+        )
+        await db.commit()
+        return emb_id
+    except Exception as exc:
+        await db.rollback()
+        logger.error(
+            "embeddings.embed_one_failed",
+            kind=kind, row_id=str(row.id), error=str(exc),
+        )
+        raise
+
+
+async def delete_embeddings_for_row(
+    db: AsyncSession,
+    *,
+    kind: str,
+    row_id: uuid.UUID,
+) -> int:
+    """Delete every Embedding pointing at `row_id` for `kind` (PG + Qdrant)."""
+    if kind not in _FK_FIELD_BY_KIND:
+        raise ValueError(f"delete_embeddings_for_row: unsupported kind {kind!r}")
+    fk_field = _FK_FIELD_BY_KIND[kind]
+
+    ids = (await db.execute(
+        select(Embedding.id).where(getattr(Embedding, fk_field) == row_id)
+    )).scalars().all()
+    if not ids:
+        return 0
+
+    try:
+        await db.execute(delete(Embedding).where(Embedding.id.in_(ids)))
+        await qdrant_store.delete_batch(ids)
+        await db.commit()
+        return len(ids)
+    except Exception:
+        await db.rollback()
+        raise

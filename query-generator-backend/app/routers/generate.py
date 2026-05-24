@@ -19,7 +19,7 @@ from app.core.prompts import build_system_prompt, build_user_prompt, truncate_co
 from app.core.retrieval import build_context_string, retrieve_context
 from app.core.settings_service import get_value_standalone
 from app.utils.sql_formatter import format_sql
-from app.deps.auth import require_user, User
+from app.deps.auth import effective_role, is_general, require_user, User
 from app.deps.db import get_db
 from app.models.catalog import Catalog
 from app.models.history import QueryHistory
@@ -56,6 +56,40 @@ class DebugRetrievalResponse(BaseModel):
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+
+async def _load_catalog_for_user(
+    db: AsyncSession,
+    *,
+    catalog_id: uuid.UUID,
+    user: User,
+) -> Catalog:
+    """Fetch a catalog and verify the user has Soldier+ access to its Sector.
+
+    Returns 404 (not 403) when the user is outside the Sector, to avoid
+    confirming the catalog's existence to outsiders. This is the IDOR fix
+    for the legacy `/v1/generate` endpoint — Phase 7 will move the route
+    under `/v1/sectors/{sid}/generate` and the membership check will be
+    enforced at the dependency layer instead.
+    """
+    row = (await db.execute(
+        select(Catalog).where(Catalog.id == catalog_id)
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Catalog not found"
+        )
+    if not is_general(user) and effective_role(user, row.sector_id) is None:
+        # Same 404 message as the not-found case on purpose.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Catalog not found"
+        )
+    if not row.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Catalog is not active",
+        )
+    return row
 
 
 async def get_catalog_policy(db: AsyncSession, catalog_id: uuid.UUID) -> Dict:
@@ -119,34 +153,27 @@ async def generate_query(
         question_length=len(request.question)
     )
     
-    # Get catalog
-    stmt = select(Catalog).where(Catalog.id == request.catalog_id)
-    result = await db.execute(stmt)
-    catalog = result.scalar_one_or_none()
-    
-    if not catalog:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Catalog not found"
-        )
-    
-    if not catalog.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Catalog is not active"
-        )
-    
+    # Resolve catalog + membership check. Returns 404 for outsiders to
+    # avoid existence leakage.
+    catalog = await _load_catalog_for_user(
+        db, catalog_id=request.catalog_id, user=current_user
+    )
+    sector_id = catalog.sector_id
+
     # Get policy
     policy = await get_catalog_policy(db, request.catalog_id)
     
     try:
-        # Retrieve context
+        # Retrieve context. We derive sector_id from the catalog row so this
+        # legacy endpoint keeps working until Phase 2 moves it under
+        # /v1/sectors/{sid}/generate and enforces membership properly.
         context_chunks = await retrieve_context(
             db=db,
             question=request.question,
+            sector_id=catalog.sector_id,
             catalog_id=request.catalog_id,
             include_schemas=request.include.schemas if request.include else None,
-            include_tables=request.include.tables if request.include else None
+            include_tables=request.include.tables if request.include else None,
         )
         
         # Build context string. Token budget comes from settings — defaults
@@ -202,6 +229,7 @@ async def generate_query(
             )
             history_entry = QueryHistory(
                 user_id=current_user.id,
+                sector_id=sector_id,
                 catalog_id=request.catalog_id,
                 engine=request.engine,
                 question=request.question,
@@ -297,6 +325,7 @@ async def generate_query(
 
         history_entry = QueryHistory(
             user_id=current_user.id,
+            sector_id=sector_id,
             catalog_id=request.catalog_id,
             engine=request.engine,
             question=request.question,
@@ -353,13 +382,14 @@ async def generate_query(
         # Save error to history
         error_entry = QueryHistory(
             user_id=current_user.id,
+            sector_id=sector_id,
             catalog_id=request.catalog_id,
             engine=request.engine,
             question=request.question,
             constraints=request.constraints.dict() if request.constraints else None,
             generation_time_ms=generation_time_ms,
             status="error",
-            error_message=str(e)
+            error_message=str(e),
         )
         
         db.add(error_entry)
@@ -442,18 +472,15 @@ async def debug_retrieval(
     content, metadata), the exact assembled context string the LLM would
     see, and a rough token estimate.
     """
-    # Validate catalog exists/is active (same as /generate)
-    stmt = select(Catalog).where(Catalog.id == request.catalog_id)
-    result = await db.execute(stmt)
-    catalog = result.scalar_one_or_none()
-    if not catalog:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Catalog not found")
-    if not catalog.is_active:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Catalog is not active")
+    # Validate catalog + Soldier+ membership in its Sector (closes IDOR).
+    catalog = await _load_catalog_for_user(
+        db, catalog_id=request.catalog_id, user=current_user
+    )
 
     context_chunks = await retrieve_context(
         db=db,
         question=request.question,
+        sector_id=catalog.sector_id,
         catalog_id=request.catalog_id,
         include_schemas=request.include.schemas if request.include else None,
         include_tables=request.include.tables if request.include else None,

@@ -3,6 +3,7 @@ Query Generator Framework - Main FastAPI Application
 """
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -12,15 +13,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
+from app.core.qdrant_client import qdrant_store
 from app.core.settings_service import seed_defaults as seed_settings_defaults
 from app.deps.db import create_db_and_tables
-from app.routers import auth, catalogs, generate, history, knowledge, policies
+from app.routers import (
+    auth,
+    catalogs,
+    corrections,
+    cost_summary,
+    generate,
+    history,
+    knowledge,
+    policies,
+    sector_settings,
+    sectors,
+)
 from app.routers import settings as settings_router
 
 
 # Configure structured logging
 structlog.configure(
     processors=[
+        # Pull correlation_id (and any other bound vars) into the log event.
+        structlog.contextvars.merge_contextvars,
         structlog.stdlib.filter_by_level,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
@@ -29,7 +44,7 @@ structlog.configure(
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
+        structlog.processors.JSONRenderer(),
     ],
     context_class=dict,
     logger_factory=structlog.stdlib.LoggerFactory(),
@@ -48,6 +63,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize database
     await create_db_and_tables()
     logger.info("Database initialized")
+
+    # Ensure Qdrant collection + payload indexes exist (idempotent).
+    try:
+        qdrant_store.ensure_collection()
+    except Exception as e:
+        logger.error("Failed to ensure Qdrant collection", error=str(e))
 
     # Seed default settings so the Settings UI has rows on fresh installs.
     try:
@@ -80,59 +101,80 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def logging_middleware(request: Request, call_next):
-    """Log all requests with structured logging"""
-    request_id = request.headers.get("X-Request-ID", "unknown")
-    
-    logger.info(
-        "Request started",
+async def correlation_middleware(request: Request, call_next):
+    """Attach a correlation ID to every request.
+
+    Honours the inbound `X-Correlation-ID` header so an upstream gateway
+    can propagate the ID across services; otherwise mints a fresh UUID.
+    The ID is stored on `request.state.correlation_id`, returned in the
+    response header, and bound into every structlog event emitted during
+    the request — making it trivial to grep logs for one user's session.
+    """
+    correlation_id = (
+        request.headers.get("X-Correlation-ID")
+        or request.headers.get("X-Request-ID")
+        or str(uuid.uuid4())
+    )
+    request.state.correlation_id = correlation_id
+
+    # Bind to structlog contextvars so every log line in this request
+    # carries the correlation_id without needing manual plumbing.
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(
+        correlation_id=correlation_id,
         method=request.method,
         path=request.url.path,
-        request_id=request_id,
     )
-    
-    response = await call_next(request)
-    
-    logger.info(
-        "Request completed",
-        method=request.method,
-        path=request.url.path,
-        status_code=response.status_code,
-        request_id=request_id,
-    )
-    
+
+    logger.info("request.start")
+    try:
+        response = await call_next(request)
+    finally:
+        structlog.contextvars.unbind_contextvars(
+            "correlation_id", "method", "path"
+        )
+
+    response.headers["X-Correlation-ID"] = correlation_id
+    logger.info("request.end", status_code=response.status_code)
     return response
 
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    """Handle HTTP exceptions with structured logging"""
-    logger.error(
-        "HTTP exception",
+    """Pass HTTP exceptions through, tagging the correlation ID."""
+    cid = getattr(request.state, "correlation_id", None)
+    logger.warning(
+        "http_exception",
         status_code=exc.status_code,
         detail=exc.detail,
-        path=request.url.path,
-        method=request.method,
+        correlation_id=cid,
     )
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail}
-    )
+    body = {"detail": exc.detail}
+    if cid:
+        body["correlation_id"] = cid
+    headers = {"X-Correlation-ID": cid} if cid else None
+    return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
 
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handle general exceptions with structured logging"""
+    """Catch-all: log the full trace internally, return a generic message
+    + the correlation ID so the user can quote it in a bug report and the
+    operator can find the trace in the logs."""
+    cid = getattr(request.state, "correlation_id", None) or str(uuid.uuid4())
     logger.error(
-        "Unhandled exception",
+        "unhandled_exception",
         error=str(exc),
-        path=request.url.path,
-        method=request.method,
+        correlation_id=cid,
         exc_info=True,
     )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Internal server error"}
+        content={
+            "detail": "Internal server error",
+            "correlation_id": cid,
+        },
+        headers={"X-Correlation-ID": cid},
     )
 
 
@@ -145,12 +187,41 @@ async def health_check():
 
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["authentication"])
-app.include_router(catalogs.router, prefix="/v1/catalogs", tags=["catalogs"])
-app.include_router(knowledge.router, prefix="/v1", tags=["knowledge"])
-app.include_router(policies.router, prefix="/v1/policies", tags=["policies"])
+app.include_router(sectors.router, prefix="/v1/sectors", tags=["sectors"])
+app.include_router(
+    corrections.router,
+    prefix="/v1/sectors/{sector_id}/corrections",
+    tags=["corrections"],
+)
+app.include_router(
+    catalogs.router,
+    prefix="/v1/sectors/{sector_id}/catalogs",
+    tags=["catalogs"],
+)
+app.include_router(
+    knowledge.router,
+    prefix="/v1/sectors/{sector_id}/knowledge",
+    tags=["knowledge"],
+)
+app.include_router(
+    policies.router,
+    prefix="/v1/sectors/{sector_id}/catalogs/{catalog_id}/policy",
+    tags=["policies"],
+)
 app.include_router(generate.router, prefix="/v1", tags=["generation"])
-app.include_router(history.router, prefix="/v1/history", tags=["history"])
+app.include_router(
+    history.router,
+    prefix="/v1/sectors/{sector_id}/history",
+    tags=["history"],
+)
 app.include_router(settings_router.router, prefix="/v1/settings", tags=["settings"])
+app.include_router(
+    sector_settings.router,
+    prefix="/v1/sectors/{sector_id}/settings",
+    tags=["sector-settings"],
+)
+# cost_summary owns its own paths (sector + global), so no shared prefix.
+app.include_router(cost_summary.router, prefix="/v1", tags=["cost"])
 
 
 if __name__ == "__main__":

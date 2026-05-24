@@ -127,6 +127,10 @@ class SettingSpec:
     # For UI rendering hints — frontend can switch widgets on this.
     ui_type: str = "text"
     choices: Optional[List[Dict[str, Any]]] = None
+    # When False, Colonels cannot override this in a Sector. Used for
+    # operational dials that must stay uniform across tenants (e.g.
+    # OpenAI batch size, cache config). General is the only writer.
+    sector_overridable: bool = True
 
 
 def _gen_model_choices() -> List[Dict[str, Any]]:
@@ -195,12 +199,25 @@ SETTINGS: Dict[str, SettingSpec] = {spec.key: spec for spec in [
         ui_type="int",
     ),
     SettingSpec(
+        key="retrieval.mmr_lambda",
+        category="retrieval",
+        description="MMR re-rank tradeoff for schema (object) chunks. "
+                    "1.0 = pure relevance (default behavior). "
+                    "Lower values diversify away from near-duplicate schema chunks. "
+                    "Typical sweet spot: 0.6–0.75. Set to 1.0 to disable.",
+        default=1.0,
+        validator=_is_float_in_range(0.0, 1.0),
+        ui_type="float",
+    ),
+    SettingSpec(
         key="embeddings.batch_size",
         category="embeddings",
         description="How many texts to send per OpenAI embedding API call.",
         default=64,
         validator=_is_int_in_range(1, 2048),
         ui_type="int",
+        # Operational dial — must be uniform across tenants.
+        sector_overridable=False,
     ),
     SettingSpec(
         key="prompt.system_template",

@@ -1,13 +1,36 @@
 """
-Qdrant client for vector operations
+Qdrant client for vector operations.
+
+Design notes
+------------
+- **Async hot path.** Searches and upserts use `AsyncQdrantClient` so they
+  do not block the FastAPI event loop.
+- **Sync boot path.** Collection creation + payload-index setup happen
+  via a small sync client called once from `lifespan` (or lazily on first
+  use). Mixing both clients is intentional: the boot path is one-shot, the
+  hot path is high-frequency.
+- **Sector is mandatory.** Every search/delete takes a `sector_id` and
+  ANDs it into the Qdrant filter. This is the second line of defense
+  against cross-tenant retrieval leaks; the first is the Postgres-level
+  scope check before we ever construct the query vector.
+- **Point ID is `Embedding.id`.** No separate `qdrant_point_id` column —
+  one source of truth.
 """
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import structlog
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient, QdrantClient
 from qdrant_client.http import models
-from qdrant_client.http.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.http.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchAny,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 
 from app.core.config import settings
 
@@ -15,344 +38,236 @@ logger = structlog.get_logger()
 
 
 class QdrantVectorStore:
-    """Wrapper for Qdrant client operations"""
-    
-    def __init__(self):
-        """Initialize Qdrant client"""
-        self.client = QdrantClient(
+    """Wrapper around `AsyncQdrantClient` with sector-scoped helpers."""
+
+    def __init__(self) -> None:
+        common = dict(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
             api_key=settings.qdrant_api_key,
-            timeout=60
+            timeout=60,
         )
+        # Hot path (async).
+        self.async_client = AsyncQdrantClient(**common)
+        # One-shot bootstrap (sync). Used only inside `ensure_collection()`.
+        self._sync_bootstrap = QdrantClient(**common)
         self.collection_name = settings.qdrant_collection_name
-        self._ensure_collection()
-    
-    def _ensure_collection(self):
-        """Ensure the collection exists with proper configuration"""
+
+    # ------------------------------------------------------------------
+    # Bootstrap (sync, one-shot — called from lifespan)
+    # ------------------------------------------------------------------
+    def ensure_collection(self) -> None:
+        """Create the collection + payload indexes if they don't exist.
+
+        Safe to call multiple times — checks existence first.
+        """
         try:
-            collections = self.client.get_collections().collections
-            collection_names = [col.name for col in collections]
-            
-            if self.collection_name not in collection_names:
-                logger.info("Creating Qdrant collection", collection=self.collection_name)
-                self.client.create_collection(
+            existing = {c.name for c in self._sync_bootstrap.get_collections().collections}
+            if self.collection_name not in existing:
+                logger.info("qdrant.create_collection", name=self.collection_name)
+                self._sync_bootstrap.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=VectorParams(
                         size=settings.embedding_dimension,
-                        distance=Distance.COSINE
+                        distance=Distance.COSINE,
+                    ),
+                )
+
+            # Idempotent — create_payload_index is a no-op if it already exists.
+            for field, schema in (
+                ("sector_id", models.PayloadSchemaType.KEYWORD),
+                ("catalog_id", models.PayloadSchemaType.KEYWORD),
+                ("kind", models.PayloadSchemaType.KEYWORD),
+                ("embed_model", models.PayloadSchemaType.KEYWORD),
+            ):
+                try:
+                    self._sync_bootstrap.create_payload_index(
+                        collection_name=self.collection_name,
+                        field_name=field,
+                        field_schema=schema,
                     )
-                )
-                
-                # Create indexes for filtering
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name="catalog_id",
-                    field_schema=models.PayloadSchemaType.KEYWORD
-                )
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name="kind",
-                    field_schema=models.PayloadSchemaType.KEYWORD
-                )
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name="embedding_id",
-                    field_schema=models.PayloadSchemaType.KEYWORD
-                )
-                
-                logger.info("Qdrant collection created successfully", collection=self.collection_name)
-            else:
-                logger.info("Qdrant collection already exists", collection=self.collection_name)
-                
-        except Exception as e:
-            logger.error("Failed to ensure Qdrant collection", error=str(e))
+                except Exception:
+                    # Index probably already exists — Qdrant raises on re-create.
+                    pass
+            logger.info("qdrant.collection_ready", name=self.collection_name)
+        except Exception as exc:
+            logger.error("qdrant.ensure_collection_failed", error=str(exc))
             raise
-    
+
+    # ------------------------------------------------------------------
+    # Writes (async)
+    # ------------------------------------------------------------------
     async def upsert_embedding(
         self,
         embedding_id: uuid.UUID,
         vector: List[float],
-        payload: Dict[str, Any]
+        payload: Dict[str, Any],
     ) -> str:
-        """
-        Insert or update an embedding in Qdrant.
-        
-        Args:
-            embedding_id: Unique ID for this embedding (from PostgreSQL)
-            vector: The embedding vector
-            payload: Metadata to store with the vector
-            
-        Returns:
-            Point ID in Qdrant (same as embedding_id as string)
-        """
-        try:
-            point_id = str(embedding_id)
-            
-            # Add embedding_id to payload for reference
-            payload["embedding_id"] = point_id
-            
-            point = PointStruct(
-                id=point_id,
-                vector=vector,
-                payload=payload
-            )
-            
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=[point]
-            )
-            
-            logger.debug("Upserted embedding to Qdrant", point_id=point_id)
-            return point_id
-            
-        except Exception as e:
-            logger.error("Failed to upsert embedding to Qdrant", error=str(e), embedding_id=embedding_id)
-            raise
-    
+        """Single upsert. Payload MUST include `sector_id`."""
+        if "sector_id" not in payload:
+            raise ValueError("Qdrant payload missing required key 'sector_id'")
+        point_id = str(embedding_id)
+        await self.async_client.upsert(
+            collection_name=self.collection_name,
+            points=[PointStruct(id=point_id, vector=vector, payload=payload)],
+        )
+        return point_id
+
     async def upsert_embeddings_batch(
         self,
-        embeddings: List[Tuple[uuid.UUID, List[float], Dict[str, Any]]]
+        embeddings: List[Tuple[uuid.UUID, List[float], Dict[str, Any]]],
     ) -> List[str]:
-        """
-        Batch insert or update embeddings in Qdrant.
-        
-        Args:
-            embeddings: List of (embedding_id, vector, payload) tuples
-            
-        Returns:
-            List of point IDs
-        """
-        try:
-            points = []
-            for embedding_id, vector, payload in embeddings:
-                point_id = str(embedding_id)
-                payload["embedding_id"] = point_id
-                
-                points.append(PointStruct(
-                    id=point_id,
-                    vector=vector,
-                    payload=payload
-                ))
-            
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=points
+        """Batch upsert. Each payload MUST include `sector_id`."""
+        points: List[PointStruct] = []
+        for emb_id, vector, payload in embeddings:
+            if "sector_id" not in payload:
+                raise ValueError(
+                    f"Qdrant payload for {emb_id} missing required key 'sector_id'"
+                )
+            points.append(
+                PointStruct(id=str(emb_id), vector=vector, payload=payload)
             )
-            
-            logger.info("Batch upserted embeddings to Qdrant", count=len(points))
-            return [str(emb[0]) for emb in embeddings]
-            
-        except Exception as e:
-            logger.error("Failed to batch upsert embeddings to Qdrant", error=str(e))
-            raise
-    
+        await self.async_client.upsert(
+            collection_name=self.collection_name, points=points
+        )
+        logger.info("qdrant.batch_upsert", count=len(points))
+        return [str(emb_id) for emb_id, _, _ in embeddings]
+
+    # ------------------------------------------------------------------
+    # Search (async, sector-scoped)
+    # ------------------------------------------------------------------
     async def search_similar(
         self,
         query_vector: List[float],
-        catalog_id: uuid.UUID,
+        *,
+        sector_id: uuid.UUID,
+        catalog_id: Optional[uuid.UUID] = None,
         limit: int = 10,
-        filter_conditions: Optional[Dict[str, Any]] = None
+        embed_model: Optional[str] = None,
+        filter_conditions: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
+        """Search vectors filtered to `sector_id` (mandatory) and the optional
+        catalog / embed_model / kind / schema / table filters.
+
+        `filter_conditions` keys (all optional):
+          - ``kind``: single string ('object', 'correction', …)
+          - ``schema``: single string OR list of strings → matches any
+          - ``table``:  single string OR list of strings → matches any
         """
-        Search for similar vectors in Qdrant.
-        
-        Args:
-            query_vector: The query embedding vector
-            catalog_id: Catalog ID to filter by
-            limit: Maximum number of results
-            filter_conditions: Additional filter conditions
-            
-        Returns:
-            List of search results with scores and payloads
-        """
-        try:
-            # Build filter
-            must_conditions = [
+        must: List[FieldCondition] = [
+            FieldCondition(key="sector_id", match=MatchValue(value=str(sector_id))),
+        ]
+        if catalog_id is not None:
+            must.append(
                 FieldCondition(
-                    key="catalog_id",
-                    match=MatchValue(value=str(catalog_id))
+                    key="catalog_id", match=MatchValue(value=str(catalog_id))
                 )
+            )
+        if embed_model:
+            must.append(
+                FieldCondition(key="embed_model", match=MatchValue(value=embed_model))
+            )
+
+        if filter_conditions:
+            if "kind" in filter_conditions:
+                must.append(
+                    FieldCondition(
+                        key="kind",
+                        match=MatchValue(value=filter_conditions["kind"]),
+                    )
+                )
+            for f in ("schema", "table"):
+                v = filter_conditions.get(f)
+                if v is None:
+                    continue
+                key = f"metadata.{f}"
+                if isinstance(v, list):
+                    must.append(FieldCondition(key=key, match=MatchAny(any=v)))
+                else:
+                    must.append(FieldCondition(key=key, match=MatchValue(value=v)))
+
+        response = await self.async_client.query_points(
+            collection_name=self.collection_name,
+            query=query_vector,
+            query_filter=Filter(must=must),
+            limit=limit,
+            with_payload=True,
+        )
+        points = getattr(response, "points", response)
+        return [
+            {"point_id": p.id, "score": p.score, "payload": p.payload}
+            for p in points
+        ]
+
+    # ------------------------------------------------------------------
+    # Deletes (async, sector-scoped)
+    # ------------------------------------------------------------------
+    async def delete_by_catalog(
+        self, *, sector_id: uuid.UUID, catalog_id: uuid.UUID
+    ) -> int:
+        """Delete every point for a catalog within a sector."""
+        flt = Filter(
+            must=[
+                FieldCondition(
+                    key="sector_id", match=MatchValue(value=str(sector_id))
+                ),
+                FieldCondition(
+                    key="catalog_id", match=MatchValue(value=str(catalog_id))
+                ),
             ]
-            
-            # Add additional filters if provided
-            if filter_conditions:
-                if "kind" in filter_conditions:
-                    must_conditions.append(
-                        FieldCondition(
-                            key="kind",
-                            match=MatchValue(value=filter_conditions["kind"])
-                        )
-                    )
-                if "schema" in filter_conditions:
-                    must_conditions.append(
-                        FieldCondition(
-                            key="metadata.schema",
-                            match=MatchValue(value=filter_conditions["schema"])
-                        )
-                    )
-                if "table" in filter_conditions:
-                    must_conditions.append(
-                        FieldCondition(
-                            key="metadata.table",
-                            match=MatchValue(value=filter_conditions["table"])
-                        )
-                    )
-            
-            search_filter = Filter(must=must_conditions)
+        )
+        count_before = await self.async_client.count(
+            collection_name=self.collection_name, count_filter=flt
+        )
+        await self.async_client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(filter=flt),
+        )
+        logger.info(
+            "qdrant.delete_catalog",
+            sector_id=str(sector_id),
+            catalog_id=str(catalog_id),
+            count=count_before.count,
+        )
+        return count_before.count
 
-            # `client.search()` was removed in qdrant-client >= 1.12; use
-            # `query_points()` which returns a `QueryResponse` whose `points`
-            # attribute is the list of `ScoredPoint`s.
-            response = self.client.query_points(
-                collection_name=self.collection_name,
-                query=query_vector,
-                query_filter=search_filter,
-                limit=limit,
-                with_payload=True,
-            )
-            results = getattr(response, "points", response)
-
-            # Format results
-            formatted_results = []
-            for result in results:
-                formatted_results.append({
-                    "point_id": result.id,
-                    "score": result.score,
-                    "payload": result.payload
-                })
-            
-            logger.info(
-                "Qdrant search completed",
-                catalog_id=catalog_id,
-                results_count=len(formatted_results)
-            )
-            
-            return formatted_results
-            
-        except Exception as e:
-            logger.error("Failed to search in Qdrant", error=str(e))
-            raise
-    
-    async def delete_by_catalog(self, catalog_id: uuid.UUID) -> int:
-        """
-        Delete all embeddings for a catalog.
-        
-        Args:
-            catalog_id: Catalog ID to delete embeddings for
-            
-        Returns:
-            Number of points deleted
-        """
-        try:
-            # Get count before deletion
-            count_before = self.client.count(
-                collection_name=self.collection_name,
-                count_filter=Filter(
-                    must=[
-                        FieldCondition(
-                            key="catalog_id",
-                            match=MatchValue(value=str(catalog_id))
-                        )
-                    ]
-                )
-            )
-            
-            # Delete points
-            self.client.delete(
-                collection_name=self.collection_name,
-                points_selector=models.FilterSelector(
-                    filter=Filter(
-                        must=[
-                            FieldCondition(
-                                key="catalog_id",
-                                match=MatchValue(value=str(catalog_id))
-                            )
-                        ]
-                    )
-                )
-            )
-            
-            logger.info("Deleted embeddings from Qdrant", catalog_id=catalog_id, count=count_before.count)
-            return count_before.count
-            
-        except Exception as e:
-            logger.error("Failed to delete embeddings from Qdrant", error=str(e))
-            raise
-    
     async def delete_by_id(self, embedding_id: uuid.UUID) -> bool:
-        """
-        Delete a specific embedding by ID.
-        
-        Args:
-            embedding_id: Embedding ID to delete
-            
-        Returns:
-            True if deleted successfully
-        """
-        try:
-            point_id = str(embedding_id)
-            self.client.delete(
-                collection_name=self.collection_name,
-                points_selector=models.PointIdsList(
-                    points=[point_id]
-                )
-            )
-            
-            logger.debug("Deleted embedding from Qdrant", embedding_id=embedding_id)
-            return True
-            
-        except Exception as e:
-            logger.error("Failed to delete embedding from Qdrant", error=str(e), embedding_id=embedding_id)
-            raise
-    
+        await self.async_client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.PointIdsList(points=[str(embedding_id)]),
+        )
+        return True
+
     async def delete_batch(self, embedding_ids: List[uuid.UUID]) -> int:
-        """
-        Delete multiple embeddings by ID.
-        
-        Args:
-            embedding_ids: List of embedding IDs to delete
-            
-        Returns:
-            Number of embeddings deleted
-        """
-        try:
-            point_ids = [str(emb_id) for emb_id in embedding_ids]
-            
-            self.client.delete(
-                collection_name=self.collection_name,
-                points_selector=models.PointIdsList(
-                    points=point_ids
-                )
-            )
-            
-            logger.info("Batch deleted embeddings from Qdrant", count=len(point_ids))
-            return len(point_ids)
-            
-        except Exception as e:
-            logger.error("Failed to batch delete embeddings from Qdrant", error=str(e))
-            raise
-    
-    def get_collection_info(self) -> Dict[str, Any]:
-        """Get information about the collection"""
-        try:
-            collection_info = self.client.get_collection(collection_name=self.collection_name)
-            return {
-                "name": collection_info.config.params.vectors.size,
-                "vectors_count": collection_info.vectors_count,
-                "points_count": collection_info.points_count,
-                "status": collection_info.status
-            }
-        except Exception as e:
-            logger.error("Failed to get collection info", error=str(e))
-            raise
+        await self.async_client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.PointIdsList(
+                points=[str(e) for e in embedding_ids]
+            ),
+        )
+        logger.info("qdrant.batch_delete", count=len(embedding_ids))
+        return len(embedding_ids)
+
+    # ------------------------------------------------------------------
+    # Inspection
+    # ------------------------------------------------------------------
+    async def get_collection_info(self) -> Dict[str, Any]:
+        info = await self.async_client.get_collection(
+            collection_name=self.collection_name
+        )
+        return {
+            "vectors_size": info.config.params.vectors.size,
+            "vectors_count": info.vectors_count,
+            "points_count": info.points_count,
+            "status": str(info.status),
+        }
 
 
-# Global instance
+# Module-level singleton — collection-create deferred to `ensure_collection()`
+# which is called from FastAPI lifespan in `app.main`.
 qdrant_store = QdrantVectorStore()
 
 
 async def get_qdrant_store() -> QdrantVectorStore:
-    """Dependency to get Qdrant store instance"""
+    """FastAPI dependency."""
     return qdrant_store
-

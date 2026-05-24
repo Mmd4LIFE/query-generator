@@ -1,23 +1,32 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Database, User, LogOut, Play } from "lucide-react"
+import { Database, User, LogOut, Play, Shield } from "lucide-react"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { QueryGeneratorAPI } from "@/lib/api"
+import type { SectorMembership } from "@/lib/api"
 import { Navigation } from "@/components/navigation"
 import { QueryGenerator } from "@/components/query-generator"
 import { QueryHistoryPage } from "@/components/query-history-page"
 import { ManageCatalogsPage } from "@/components/manage-catalogs-page"
 import { UserSettingsPage } from "@/components/user-settings-page"
 import { SettingsPage } from "@/components/settings-page"
+import { SectorsAdminPage } from "@/components/sectors-admin-page"
 import { getUserPermissions } from "@/lib/utils"
 
-type Page = "generate" | "catalogs" | "users" | "history" | "settings"
+type Page = "generate" | "catalogs" | "users" | "history" | "settings" | "sectors"
 
 export default function QueryGeneratorApp() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -29,9 +38,74 @@ export default function QueryGeneratorApp() {
   const [userProfile, setUserProfile] = useState<any>(null)
   const [isInitializing, setIsInitializing] = useState(true)
   const [api] = useState(() => new QueryGeneratorAPI())
+  // Sector context — General sees a switcher across every Sector; Colonels/
+  // Captains/Soldiers see only theirs. The chosen sector_id is forwarded
+  // by api-client on every sector-scoped request.
+  const [sectors, setSectors] = useState<SectorMembership[]>([])
+  const [activeSectorId, setActiveSectorId] = useState<string | null>(null)
 
-  // Get user permissions
-  const permissions = getUserPermissions(userProfile)
+  const applySectorContextFromProfile = async (profile: any) => {
+    let list: SectorMembership[] = Array.isArray(profile?.sectors) ? profile.sectors : []
+
+    // Generals carry no `sectors[]` in the JWT (their authority is global),
+    // but they still need a "current Sector" to act inside. Fetch the full
+    // Sector roster from the server and surface every one as a synthetic
+    // membership with role='general' so the switcher renders them and
+    // sector-scoped requests have a target.
+    if (profile?.is_general) {
+      try {
+        const all = await api.listSectors()
+        const owned = new Set(list.map((s) => s.sector_id))
+        const synthesised: SectorMembership[] = all
+          .filter((s) => s.is_active && !owned.has(s.id))
+          .map((s) => ({
+            sector_id: s.id,
+            sector_code: s.code,
+            sector_name: s.name,
+            role: 'general',
+          }))
+        list = [...list, ...synthesised]
+      } catch (err) {
+        console.error('Failed to load Sectors for General context', err)
+      }
+    }
+
+    setSectors(list)
+
+    // Restore the user's last choice if it's still in the visible list.
+    const stored = typeof window !== 'undefined' ? localStorage.getItem('current_sector_id') : null
+    const validStored = stored && list.some((s) => s.sector_id === stored) ? stored : null
+
+    const pick = validStored ?? (list.length > 0 ? list[0].sector_id : null)
+    if (pick) {
+      setActiveSectorId(pick)
+      api.setCurrentSector(pick)
+      if (typeof window !== 'undefined') localStorage.setItem('current_sector_id', pick)
+    } else {
+      setActiveSectorId(null)
+      api.setCurrentSector(null)
+    }
+  }
+
+  const handleSectorChange = (sectorId: string) => {
+    setActiveSectorId(sectorId)
+    api.setCurrentSector(sectorId)
+    if (typeof window !== 'undefined') localStorage.setItem('current_sector_id', sectorId)
+  }
+
+  // Compute a role profile scoped to the ACTIVE sector so that nav items
+  // reflect what the user can do in the currently-selected sector, not
+  // the highest role they hold across all sectors.
+  const currentRoleProfile = useMemo(() => {
+    if (!userProfile) return null
+    if (userProfile.is_general) return userProfile
+    const currentSector = sectors.find((s) => s.sector_id === activeSectorId)
+    if (!currentSector) return userProfile
+    return { ...userProfile, sectors: [currentSector] }
+  }, [userProfile, activeSectorId, sectors])
+
+  // Get user permissions scoped to current sector
+  const permissions = getUserPermissions(currentRoleProfile)
 
   // Check for existing authentication on component mount
   useEffect(() => {
@@ -48,6 +122,7 @@ export default function QueryGeneratorApp() {
           api.setToken(storedToken)
           const profile = await api.getUserProfile()
           setUserProfile(profile)
+          await applySectorContextFromProfile(profile)
           setIsAuthenticated(true)
           console.log('✅ Restored authentication from stored token')
         } else if (api.isDemoMode()) {
@@ -93,6 +168,7 @@ export default function QueryGeneratorApp() {
       const profile = await api.getUserProfile()
       console.log('👤 User profile:', profile)
       setUserProfile(profile)
+      await applySectorContextFromProfile(profile)
       setIsAuthenticated(true)
     } catch (err) {
       console.error('❌ Login failed:', err)
@@ -121,9 +197,12 @@ export default function QueryGeneratorApp() {
 
   const handleLogout = () => {
     localStorage.removeItem('auth_token')
+    localStorage.removeItem('current_sector_id')
     api.clearToken()
     setIsAuthenticated(false)
     setUserProfile(null)
+    setSectors([])
+    setActiveSectorId(null)
     setCurrentPage("generate")
     api.setDemoMode(false)
   }
@@ -176,7 +255,7 @@ export default function QueryGeneratorApp() {
                 placeholder="Enter password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                onKeyPress={(e) => e.key === "Enter" && handleLogin()}
+                onKeyDown={(e) => e.key === "Enter" && handleLogin()}
               />
             </div>
             {error && (
@@ -231,6 +310,37 @@ export default function QueryGeneratorApp() {
             </div>
           </div>
           <div className="flex items-center space-x-2">
+            {/* Sector switcher — visible when the caller belongs to 2+ Sectors */}
+            {sectors.length > 1 && (
+              <div className="flex items-center space-x-1">
+                <Shield className="w-3 h-3 text-muted-foreground hidden sm:block" />
+                <Select
+                  value={activeSectorId ?? undefined}
+                  onValueChange={handleSectorChange}
+                >
+                  <SelectTrigger className="h-8 w-[160px] text-xs">
+                    <SelectValue placeholder="Pick a Sector" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sectors.map((s) => (
+                      <SelectItem key={s.sector_id} value={s.sector_id}>
+                        {s.sector_name || s.sector_code}{" "}
+                        <span className="text-muted-foreground text-[10px]">
+                          ({s.role})
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {sectors.length === 1 && (
+              <Badge variant="outline" className="hidden md:flex items-center space-x-1 text-xs">
+                <Shield className="w-3 h-3" />
+                <span>{sectors[0].sector_name || sectors[0].sector_code}</span>
+                <span className="text-muted-foreground">· {sectors[0].role}</span>
+              </Badge>
+            )}
             <Badge variant="secondary" className="hidden sm:flex items-center space-x-1">
               <User className="w-3 h-3" />
               <span>{userProfile?.username || username}</span>
@@ -259,18 +369,44 @@ export default function QueryGeneratorApp() {
 
         {/* Main Content */}
         <main className="flex-1 pt-16 lg:pt-0 min-h-screen overflow-hidden lg:ml-0 ml-16">
-          {currentPage === "generate" && <QueryGenerator api={api} />}
-          {currentPage === "history" && <QueryHistoryPage api={api} userProfile={userProfile} />}
+          {/* key={activeSectorId} causes sector-scoped pages to fully remount
+              when the sector changes, triggering fresh data loads automatically. */}
+          {currentPage === "generate" && (
+            <QueryGenerator key={activeSectorId || '_'} api={api} />
+          )}
+          {currentPage === "history" && (
+            <QueryHistoryPage
+              key={activeSectorId || '_'}
+              api={api}
+              userProfile={userProfile}
+              activeSectorId={activeSectorId}
+            />
+          )}
           {currentPage === "catalogs" && (
-            <ManageCatalogsPage 
-              api={api} 
+            <ManageCatalogsPage
+              key={activeSectorId || '_'}
+              api={api}
               userPermissions={{
                 canCreateKnowledge: permissions.canManageCatalogs,
                 canApproveKnowledge: permissions.isAdmin,
               }}
             />
           )}
-          {currentPage === "users" && <UserSettingsPage api={api} />}
+          {currentPage === "users" && (
+            <UserSettingsPage
+              api={api}
+              userProfile={userProfile}
+              activeSectorId={activeSectorId}
+            />
+          )}
+          {currentPage === "sectors" && permissions.isGeneral && (
+            <SectorsAdminPage
+              api={api}
+              onSectorsChanged={() => {
+                applySectorContextFromProfile(userProfile)
+              }}
+            />
+          )}
           {currentPage === "settings" && permissions.isAdmin && (
             <SettingsPage api={api} />
           )}

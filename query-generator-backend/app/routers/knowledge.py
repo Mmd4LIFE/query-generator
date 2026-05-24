@@ -1,31 +1,61 @@
 """
-Knowledge management router (notes, metrics, examples)
+Knowledge router — Phase 2, sector-scoped.
+
+Mounted at `/v1/sectors/{sector_id}/knowledge/{notes|metrics|examples}`.
+
+Tier matrix
+-----------
+- **Soldier+** reads notes / metrics / examples in their Sector.
+- **Captain+** creates and updates pending items.
+- **Colonel+** approves or rejects. The integrity rule
+  ``approved_by != created_by`` is enforced **here, not at the DB layer**,
+  because the DB cannot see the auth principal. Generals are **not**
+  exempt — self-approval is a correctness rule, not a permission one
+  (same as `routers/corrections.py`).
+
+Per-row embedding
+-----------------
+Approval calls `embed_one_knowledge_row` so only the affected row goes
+through the embedder — no more whole-catalog reindex on every edit.
+Rejection of a previously-approved row drops its embedding via
+`delete_embeddings_for_row`.
+
+If the underlying knowledge row is not catalog-bound (`catalog_id IS
+NULL` — sector-global), embedding is currently a no-op. The retrieval
+path filters by `catalog_id`, so sector-global knowledge is not surfaced
+yet; bridging that is a Phase-4 follow-up (see ROADMAP §6).
 """
+from __future__ import annotations
+
 import uuid
-from typing import List
+from typing import List, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.embeddings import create_embeddings_for_catalog
+from app.core.audit import write_audit
+from app.core.embeddings import (
+    delete_embeddings_for_row,
+    embed_one_knowledge_row,
+)
 from app.deps.auth import (
-    get_user_active_role,
-    require_admin,
-    require_data_guy,
-    require_user,
+    SectorContext,
     User,
+    get_current_active_user,
+    require_sector_captain,
+    require_sector_colonel,
+    require_sector_soldier,
 )
 from app.deps.db import get_db
+from app.models.catalog import Catalog
 from app.models.knowledge import Example, Metric, Note
 from app.schemas.knowledge import (
     ApprovalRequest,
     ApprovalResponse,
     Example as ExampleSchema,
     ExampleCreate,
-    KnowledgeFilter,
-    KnowledgeList,
     Metric as MetricSchema,
     MetricCreate,
     Note as NoteSchema,
@@ -36,453 +66,466 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
-_TRUSTED_APPROVER_ROLES = {"admin", "super_admin"}
+# ---------------------------------------------------------------------------
+# Generic helpers — work across all three knowledge models
+# ---------------------------------------------------------------------------
 
+async def _check_catalog_in_sector(
+    db: AsyncSession,
+    *,
+    catalog_id: Optional[uuid.UUID],
+    sector_id: uuid.UUID,
+) -> None:
+    """Reject any cross-sector catalog reference at the API edge.
 
-def _is_trusted_approver(user: User) -> bool:
-    """Admins (and super_admins) skip the approval queue — their knowledge is
-    auto-approved and immediately embedded so the generator can use it."""
-    return get_user_active_role(user) in _TRUSTED_APPROVER_ROLES
-
-
-async def _reindex_catalog_safe(db: AsyncSession, catalog_id: uuid.UUID) -> None:
-    """Trigger an incremental reindex after a knowledge change.
-
-    Swallows errors so a failed embedding step never breaks the user-facing
-    create/approve response — the item is already persisted and the user can
-    retry reindex from the catalog page if needed.
+    Knowledge rows can be sector-global (`catalog_id IS NULL`) — that's fine.
+    When a catalog_id IS supplied, it must belong to this Sector.
     """
     if catalog_id is None:
         return
-    try:
-        await create_embeddings_for_catalog(db, catalog_id, force=False)
-    except Exception as e:
-        logger.error(
-            "Auto-reindex failed after knowledge change",
-            catalog_id=catalog_id,
-            error=str(e),
+    found = (await db.execute(
+        select(Catalog.id).where(
+            Catalog.id == catalog_id, Catalog.sector_id == sector_id
+        )
+    )).scalar_one_or_none()
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="catalog_id does not belong to this Sector",
         )
 
 
-# Notes endpoints
+def _kind_for_model(model_cls) -> str:
+    return {Note: "note", Metric: "metric", Example: "example"}[model_cls]
+
+
+async def _approve_or_reject_row(
+    db: AsyncSession,
+    *,
+    row,
+    action: str,             # "approve" or "reject"
+    actor: User,
+    sector_id: uuid.UUID,
+) -> None:
+    """Shared approve/reject mechanics: integrity check, status, embedding,
+    audit. Caller must `await db.commit()` and `await db.refresh(row)` after."""
+    if action == "approve":
+        if row.created_by == actor.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Approver must differ from creator",
+            )
+
+        prev_status = row.status
+        row.status = "approved"
+        row.approved_by = actor.id
+        kind = _kind_for_model(type(row))
+
+        # Embed (or re-embed) this single row. Embedding failure is fatal:
+        # we cannot honestly say "approved" if retrieval won't see it.
+        try:
+            await embed_one_knowledge_row(db, kind=kind, row=row)
+        except Exception as exc:
+            logger.error(
+                "knowledge.approve.embed_failed",
+                kind=kind,
+                row_id=str(row.id),
+                error=str(exc),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Embedding service unavailable — try again",
+            )
+
+        write_audit(
+            db,
+            actor_id=actor.id,
+            sector_id=sector_id,
+            action=f"{kind}.approve",
+            target_type=kind,
+            target_id=row.id,
+            diff={"before": {"status": prev_status},
+                  "after": {"status": "approved", "approved_by": str(actor.id)}},
+        )
+
+    elif action == "reject":
+        prev_status = row.status
+        row.status = "rejected"
+        row.approved_by = None
+        kind = _kind_for_model(type(row))
+
+        # Cleanup: if we're rejecting something that was previously
+        # approved, drop its embedding. Best-effort — if the cleanup
+        # fails, the next reindex will still remove the orphan because
+        # `cleanup_rejected_embeddings` filters by status != 'approved'.
+        if prev_status == "approved":
+            try:
+                await delete_embeddings_for_row(db, kind=kind, row_id=row.id)
+            except Exception as exc:
+                logger.error(
+                    "knowledge.reject.cleanup_failed",
+                    kind=kind, row_id=str(row.id), error=str(exc),
+                )
+
+        write_audit(
+            db,
+            actor_id=actor.id,
+            sector_id=sector_id,
+            action=f"{kind}.reject",
+            target_type=kind,
+            target_id=row.id,
+            diff={"before": {"status": prev_status},
+                  "after": {"status": "rejected"}},
+        )
+    else:
+        # Should be unreachable — schema validates this.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid action {action!r}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# NOTES
+# ---------------------------------------------------------------------------
+
 @router.post("/notes", response_model=NoteSchema)
 async def create_note(
-    note_create: NoteCreate,
+    body: NoteCreate,
+    *,
+    sector: SectorContext = Depends(require_sector_captain),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_data_guy)
+    actor: User = Depends(get_current_active_user),
 ):
-    """Create a new note (data_guy+ role required).
-
-    Admin-created notes are auto-approved and the catalog is reindexed
-    immediately so the new content is available to the generator.
-    """
-    auto_approve = _is_trusted_approver(current_user)
-    db_note = Note(
-        title=note_create.title,
-        content=note_create.content,
-        tags=note_create.tags,
-        catalog_id=note_create.catalog_id,
-        created_by=current_user.id,
-        status="approved" if auto_approve else "pending",
-        approved_by=current_user.id if auto_approve else None,
+    """Create a pending note. Approval is a separate Colonel+ step."""
+    sector_id = sector.sector.id
+    await _check_catalog_in_sector(
+        db, catalog_id=body.catalog_id, sector_id=sector_id
     )
 
-    db.add(db_note)
+    note = Note(
+        sector_id=sector_id,
+        title=body.title,
+        content=body.content,
+        tags=body.tags,
+        catalog_id=body.catalog_id,
+        created_by=actor.id,
+        status="pending",
+    )
+    db.add(note)
+    await db.flush()
+
+    write_audit(
+        db,
+        actor_id=actor.id,
+        sector_id=sector_id,
+        action="note.create",
+        target_type="note",
+        target_id=note.id,
+        diff={"after": {"title": note.title, "catalog_id": str(note.catalog_id) if note.catalog_id else None}},
+    )
     await db.commit()
-    await db.refresh(db_note)
-
-    logger.info(
-        "Note created",
-        note_id=db_note.id,
-        created_by=current_user.id,
-        status=db_note.status,
-    )
-
-    if auto_approve and db_note.catalog_id:
-        await _reindex_catalog_safe(db, db_note.catalog_id)
-
-    return db_note
+    await db.refresh(note)
+    return note
 
 
 @router.get("/notes", response_model=List[NoteSchema])
 async def list_notes(
-    status: str = None,
-    catalog_id: str = None,
-    limit: int = 50,
-    offset: int = 0,
+    *,
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_user)
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    catalog_id: Optional[uuid.UUID] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ):
-    """List notes with filtering"""
-    stmt = select(Note)
-    if status:
-        stmt = stmt.where(Note.status == status)
-    
+    stmt = select(Note).where(Note.sector_id == sector.sector.id)
+    if status_filter:
+        stmt = stmt.where(Note.status == status_filter)
     if catalog_id:
-        stmt = stmt.where(Note.catalog_id == uuid.UUID(catalog_id))
-    
-    # Count total
-    count_stmt = select(func.count(Note.id))
-    if status:
-        count_stmt = count_stmt.where(Note.status == status)
-    if catalog_id:
-        count_stmt = count_stmt.where(Note.catalog_id == uuid.UUID(catalog_id))
-    
-    total_result = await db.execute(count_stmt)
-    total = total_result.scalar()
-    
-    # Get items
-    stmt = stmt.order_by(Note.created_at.desc()).limit(limit).offset(offset)
-    result = await db.execute(stmt)
-    notes = result.scalars().all()
-    
-    return notes
+        stmt = stmt.where(Note.catalog_id == catalog_id)
+    rows = (await db.execute(
+        stmt.order_by(desc(Note.created_at)).limit(limit).offset(offset)
+    )).scalars().all()
+    return rows
 
 
 @router.get("/notes/{note_id}", response_model=NoteSchema)
 async def get_note(
     note_id: uuid.UUID,
+    *,
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_user)
 ):
-    """Get a specific note by ID"""
-    stmt = select(Note).where(Note.id == note_id)
-    result = await db.execute(stmt)
-    note = result.scalar_one_or_none()
-    
-    if not note:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Note not found"
+    row = (await db.execute(
+        select(Note).where(
+            Note.id == note_id, Note.sector_id == sector.sector.id
         )
-    
-    return note
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Note not found")
+    return row
 
 
 @router.post("/notes/{note_id}/approve", response_model=ApprovalResponse)
 async def approve_note(
     note_id: uuid.UUID,
-    approval: ApprovalRequest,
+    body: ApprovalRequest,
+    *,
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
+    actor: User = Depends(get_current_active_user),
 ):
-    """Approve or reject a note (admin only)"""
-    stmt = select(Note).where(Note.id == note_id)
-    result = await db.execute(stmt)
-    note = result.scalar_one_or_none()
-    
-    if not note:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Note not found"
+    note = (await db.execute(
+        select(Note).where(
+            Note.id == note_id, Note.sector_id == sector.sector.id
         )
-    
-    note.status = approval.action + "d"  # "approve" -> "approved", "reject" -> "rejected"
-    note.approved_by = current_user.id
+    )).scalar_one_or_none()
+    if note is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Note not found")
 
+    await _approve_or_reject_row(
+        db, row=note, action=body.action, actor=actor, sector_id=sector.sector.id
+    )
     await db.commit()
     await db.refresh(note)
-
-    logger.info(
-        "Note approval updated",
-        note_id=note_id,
-        status=note.status,
-        approved_by=current_user.id
-    )
-
-    # Approval/rejection both change what should be embedded, so refresh now.
-    if note.catalog_id:
-        await _reindex_catalog_safe(db, note.catalog_id)
-
     return ApprovalResponse(
         id=note.id,
         status=note.status,
         approved_by=note.approved_by,
-        updated_at=note.updated_at
+        updated_at=note.updated_at,
     )
 
 
-# Metrics endpoints
+# ---------------------------------------------------------------------------
+# METRICS
+# ---------------------------------------------------------------------------
+
 @router.post("/metrics", response_model=MetricSchema)
 async def create_metric(
-    metric_create: MetricCreate,
+    body: MetricCreate,
+    *,
+    sector: SectorContext = Depends(require_sector_captain),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_data_guy)
+    actor: User = Depends(get_current_active_user),
 ):
-    """Create a new metric (data_guy+ role required).
-
-    Admin-created metrics are auto-approved and the catalog is reindexed
-    immediately so the new content is available to the generator.
-    """
-    auto_approve = _is_trusted_approver(current_user)
-    db_metric = Metric(
-        name=metric_create.name,
-        description=metric_create.description,
-        expression=metric_create.expression,
-        engine=metric_create.engine,
-        tags=metric_create.tags,
-        catalog_id=metric_create.catalog_id,
-        metric_metadata=metric_create.metric_metadata,
-        created_by=current_user.id,
-        status="approved" if auto_approve else "pending",
-        approved_by=current_user.id if auto_approve else None,
+    sector_id = sector.sector.id
+    await _check_catalog_in_sector(
+        db, catalog_id=body.catalog_id, sector_id=sector_id
     )
 
-    db.add(db_metric)
+    metric = Metric(
+        sector_id=sector_id,
+        name=body.name,
+        description=body.description,
+        expression=body.expression,
+        engine=body.engine,
+        tags=body.tags,
+        catalog_id=body.catalog_id,
+        metric_metadata=body.metric_metadata,
+        created_by=actor.id,
+        status="pending",
+    )
+    db.add(metric)
+    await db.flush()
+
+    write_audit(
+        db,
+        actor_id=actor.id,
+        sector_id=sector_id,
+        action="metric.create",
+        target_type="metric",
+        target_id=metric.id,
+        diff={"after": {"name": metric.name, "engine": metric.engine}},
+    )
     await db.commit()
-    await db.refresh(db_metric)
-
-    logger.info(
-        "Metric created",
-        metric_id=db_metric.id,
-        created_by=current_user.id,
-        status=db_metric.status,
-    )
-
-    if auto_approve and db_metric.catalog_id:
-        await _reindex_catalog_safe(db, db_metric.catalog_id)
-
-    return db_metric
+    await db.refresh(metric)
+    return metric
 
 
 @router.get("/metrics", response_model=List[MetricSchema])
 async def list_metrics(
-    status: str = None,
-    catalog_id: str = None,
-    limit: int = 50,
-    offset: int = 0,
+    *,
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_user)
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    catalog_id: Optional[uuid.UUID] = None,
+    engine: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ):
-    """List metrics with filtering"""
-    stmt = select(Metric)
-    if status:
-        stmt = stmt.where(Metric.status == status)
-    
+    stmt = select(Metric).where(Metric.sector_id == sector.sector.id)
+    if status_filter:
+        stmt = stmt.where(Metric.status == status_filter)
     if catalog_id:
-        stmt = stmt.where(Metric.catalog_id == uuid.UUID(catalog_id))
-    
-    # Count total
-    count_stmt = select(func.count(Metric.id))
-    if status:
-        count_stmt = count_stmt.where(Metric.status == status)
-    if catalog_id:
-        count_stmt = count_stmt.where(Metric.catalog_id == uuid.UUID(catalog_id))
-    
-    total_result = await db.execute(count_stmt)
-    total = total_result.scalar()
-    
-    # Get items
-    stmt = stmt.order_by(Metric.created_at.desc()).limit(limit).offset(offset)
-    result = await db.execute(stmt)
-    metrics = result.scalars().all()
-    
-    return metrics
+        stmt = stmt.where(Metric.catalog_id == catalog_id)
+    if engine:
+        stmt = stmt.where(Metric.engine == engine)
+    rows = (await db.execute(
+        stmt.order_by(desc(Metric.created_at)).limit(limit).offset(offset)
+    )).scalars().all()
+    return rows
 
 
 @router.get("/metrics/{metric_id}", response_model=MetricSchema)
 async def get_metric(
     metric_id: uuid.UUID,
+    *,
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_user)
 ):
-    """Get a specific metric by ID"""
-    stmt = select(Metric).where(Metric.id == metric_id)
-    result = await db.execute(stmt)
-    metric = result.scalar_one_or_none()
-    
-    if not metric:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Metric not found"
+    row = (await db.execute(
+        select(Metric).where(
+            Metric.id == metric_id, Metric.sector_id == sector.sector.id
         )
-    
-    return metric
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Metric not found")
+    return row
 
 
 @router.post("/metrics/{metric_id}/approve", response_model=ApprovalResponse)
 async def approve_metric(
     metric_id: uuid.UUID,
-    approval: ApprovalRequest,
+    body: ApprovalRequest,
+    *,
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
+    actor: User = Depends(get_current_active_user),
 ):
-    """Approve or reject a metric (admin only)"""
-    stmt = select(Metric).where(Metric.id == metric_id)
-    result = await db.execute(stmt)
-    metric = result.scalar_one_or_none()
-    
-    if not metric:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Metric not found"
+    metric = (await db.execute(
+        select(Metric).where(
+            Metric.id == metric_id, Metric.sector_id == sector.sector.id
         )
-    
-    metric.status = approval.action + "d"
-    metric.approved_by = current_user.id
+    )).scalar_one_or_none()
+    if metric is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Metric not found")
 
+    await _approve_or_reject_row(
+        db, row=metric, action=body.action, actor=actor, sector_id=sector.sector.id
+    )
     await db.commit()
     await db.refresh(metric)
-
-    logger.info(
-        "Metric approval updated",
-        metric_id=metric_id,
-        status=metric.status,
-        approved_by=current_user.id
-    )
-
-    if metric.catalog_id:
-        await _reindex_catalog_safe(db, metric.catalog_id)
-
     return ApprovalResponse(
         id=metric.id,
         status=metric.status,
         approved_by=metric.approved_by,
-        updated_at=metric.updated_at
+        updated_at=metric.updated_at,
     )
 
 
-# Examples endpoints
+# ---------------------------------------------------------------------------
+# EXAMPLES
+# ---------------------------------------------------------------------------
+
 @router.post("/examples", response_model=ExampleSchema)
 async def create_example(
-    example_create: ExampleCreate,
+    body: ExampleCreate,
+    *,
+    sector: SectorContext = Depends(require_sector_captain),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_data_guy)
+    actor: User = Depends(get_current_active_user),
 ):
-    """Create a new example (data_guy+ role required).
-
-    Admin-created examples are auto-approved and the catalog is reindexed
-    immediately so the new content is available to the generator.
-    """
-    auto_approve = _is_trusted_approver(current_user)
-    db_example = Example(
-        title=example_create.title,
-        description=example_create.description,
-        sql_snippet=example_create.sql_snippet,
-        engine=example_create.engine,
-        tags=example_create.tags,
-        catalog_id=example_create.catalog_id,
-        example_metadata=example_create.example_metadata,
-        created_by=current_user.id,
-        status="approved" if auto_approve else "pending",
-        approved_by=current_user.id if auto_approve else None,
+    sector_id = sector.sector.id
+    await _check_catalog_in_sector(
+        db, catalog_id=body.catalog_id, sector_id=sector_id
     )
 
-    db.add(db_example)
+    example = Example(
+        sector_id=sector_id,
+        title=body.title,
+        description=body.description,
+        sql_snippet=body.sql_snippet,
+        engine=body.engine,
+        tags=body.tags,
+        catalog_id=body.catalog_id,
+        example_metadata=body.example_metadata,
+        created_by=actor.id,
+        status="pending",
+    )
+    db.add(example)
+    await db.flush()
+
+    write_audit(
+        db,
+        actor_id=actor.id,
+        sector_id=sector_id,
+        action="example.create",
+        target_type="example",
+        target_id=example.id,
+        diff={"after": {"title": example.title, "engine": example.engine}},
+    )
     await db.commit()
-    await db.refresh(db_example)
-
-    logger.info(
-        "Example created",
-        example_id=db_example.id,
-        created_by=current_user.id,
-        status=db_example.status,
-    )
-
-    if auto_approve and db_example.catalog_id:
-        await _reindex_catalog_safe(db, db_example.catalog_id)
-
-    return db_example
+    await db.refresh(example)
+    return example
 
 
 @router.get("/examples", response_model=List[ExampleSchema])
 async def list_examples(
-    status: str = None,
-    catalog_id: str = None,
-    engine: str = None,
-    limit: int = 50,
-    offset: int = 0,
+    *,
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_user)
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    catalog_id: Optional[uuid.UUID] = None,
+    engine: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ):
-    """List examples with filtering"""
-    stmt = select(Example)
-    if status:
-        stmt = stmt.where(Example.status == status)
-    
+    stmt = select(Example).where(Example.sector_id == sector.sector.id)
+    if status_filter:
+        stmt = stmt.where(Example.status == status_filter)
     if catalog_id:
-        stmt = stmt.where(Example.catalog_id == uuid.UUID(catalog_id))
-    
+        stmt = stmt.where(Example.catalog_id == catalog_id)
     if engine:
         stmt = stmt.where(Example.engine == engine)
-    
-    # Count total
-    count_stmt = select(func.count(Example.id))
-    if status:
-        count_stmt = count_stmt.where(Example.status == status)
-    if catalog_id:
-        count_stmt = count_stmt.where(Example.catalog_id == uuid.UUID(catalog_id))
-    if engine:
-        count_stmt = count_stmt.where(Example.engine == engine)
-    
-    total_result = await db.execute(count_stmt)
-    total = total_result.scalar()
-    
-    # Get items
-    stmt = stmt.order_by(Example.created_at.desc()).limit(limit).offset(offset)
-    result = await db.execute(stmt)
-    examples = result.scalars().all()
-    
-    return examples
+    rows = (await db.execute(
+        stmt.order_by(desc(Example.created_at)).limit(limit).offset(offset)
+    )).scalars().all()
+    return rows
 
 
 @router.get("/examples/{example_id}", response_model=ExampleSchema)
 async def get_example(
     example_id: uuid.UUID,
+    *,
+    sector: SectorContext = Depends(require_sector_soldier),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_user)
 ):
-    """Get a specific example by ID"""
-    stmt = select(Example).where(Example.id == example_id)
-    result = await db.execute(stmt)
-    example = result.scalar_one_or_none()
-    
-    if not example:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Example not found"
+    row = (await db.execute(
+        select(Example).where(
+            Example.id == example_id, Example.sector_id == sector.sector.id
         )
-    
-    return example
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Example not found")
+    return row
 
 
 @router.post("/examples/{example_id}/approve", response_model=ApprovalResponse)
 async def approve_example(
     example_id: uuid.UUID,
-    approval: ApprovalRequest,
+    body: ApprovalRequest,
+    *,
+    sector: SectorContext = Depends(require_sector_colonel),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin)
+    actor: User = Depends(get_current_active_user),
 ):
-    """Approve or reject an example (admin only)"""
-    stmt = select(Example).where(Example.id == example_id)
-    result = await db.execute(stmt)
-    example = result.scalar_one_or_none()
-    
-    if not example:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Example not found"
+    example = (await db.execute(
+        select(Example).where(
+            Example.id == example_id, Example.sector_id == sector.sector.id
         )
-    
-    example.status = approval.action + "d"
-    example.approved_by = current_user.id
+    )).scalar_one_or_none()
+    if example is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Example not found")
 
+    await _approve_or_reject_row(
+        db, row=example, action=body.action, actor=actor, sector_id=sector.sector.id
+    )
     await db.commit()
     await db.refresh(example)
-
-    logger.info(
-        "Example approval updated",
-        example_id=example_id,
-        status=example.status,
-        approved_by=current_user.id
-    )
-
-    if example.catalog_id:
-        await _reindex_catalog_safe(db, example.catalog_id)
-
     return ApprovalResponse(
         id=example.id,
         status=example.status,
         approved_by=example.approved_by,
-        updated_at=example.updated_at
-    ) 
+        updated_at=example.updated_at,
+    )
