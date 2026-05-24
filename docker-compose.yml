@@ -42,8 +42,8 @@ services:
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-qg}:${POSTGRES_PASSWORD:-qg}@postgres:5432/${POSTGRES_DB:-qg}
-      POSTGRES_HOST: postgres
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-qg}:${POSTGRES_PASSWORD:-qg}@${POSTGRES_HOST}:5432/${POSTGRES_DB:-qg}
+      POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-qg}
       POSTGRES_USER: ${POSTGRES_USER:-qg}
