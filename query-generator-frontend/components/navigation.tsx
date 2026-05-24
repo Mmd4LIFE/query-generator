@@ -1,7 +1,7 @@
 "use client"
 
 import { Button } from "@/components/ui/button"
-import { Database, Zap, Users, History, Settings, ShieldCheck } from "lucide-react"
+import { Database, Zap, Users, History, Settings, ShieldCheck, ClipboardCheck, SlidersHorizontal, BarChart2 } from "lucide-react"
 import { cn, getUserPermissions } from "@/lib/utils"
 
 export type AppPage =
@@ -11,6 +11,9 @@ export type AppPage =
   | "history"
   | "settings"
   | "sectors"
+  | "corrections"
+  | "sector-settings"
+  | "cost"
 
 interface NavigationProps {
   currentPage: string
@@ -40,10 +43,27 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
       requiresPermission: () => permissions.canManageCatalogs,
     },
     {
+      id: "corrections" as const,
+      label: "Corrections",
+      icon: ClipboardCheck,
+      requiresPermission: () => permissions.canApproveKnowledge,
+    },
+    {
+      id: "sector-settings" as const,
+      label: "Sector Settings",
+      icon: SlidersHorizontal,
+      requiresPermission: () => permissions.canManageSecurityPolicies,
+    },
+    {
+      id: "cost" as const,
+      label: "Cost Dashboard",
+      icon: BarChart2,
+      requiresPermission: () => permissions.canApproveKnowledge,
+    },
+    {
       id: "sectors" as const,
       label: "Sectors",
       icon: ShieldCheck,
-      // General-only — the only role that can create / archive / staff Sectors.
       requiresPermission: () => permissions.isGeneral,
     },
     {
@@ -56,8 +76,6 @@ export function Navigation({ currentPage, onPageChange, permissions }: Navigatio
       id: "settings" as const,
       label: "Settings",
       icon: Settings,
-      // Settings is admin-only — same gate as user management since both
-      // edit system-wide state.
       requiresPermission: () => permissions.isAdmin,
     },
   ]

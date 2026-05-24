@@ -250,6 +250,10 @@ async def generate_query(
                         for kind in set(c["kind"] for c in context_chunks)
                     }
                 } if context_chunks else None,
+                context_chunk_ids={
+                    "ids": [str(c["point_id"]) for c in context_chunks],
+                    "scores": [round(float(c["score"]), 4) for c in context_chunks],
+                } if context_chunks else None,
                 status="no_sql",
                 error_message=None,
             )
@@ -347,6 +351,10 @@ async def generate_query(
                     kind: len([c for c in context_chunks if c["kind"] == kind])
                     for kind in set(c["kind"] for c in context_chunks)
                 }
+            } if context_chunks else None,
+            context_chunk_ids={
+                "ids": [str(c["point_id"]) for c in context_chunks],
+                "scores": [round(float(c["score"]), 4) for c in context_chunks],
             } if context_chunks else None,
             status="success" if not guardrails_result.violations else "policy_violation"
         )

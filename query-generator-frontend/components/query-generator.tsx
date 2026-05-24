@@ -27,6 +27,7 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
   const [question, setQuestion] = useState("")
   const [selectedCatalog, setSelectedCatalog] = useState("")
   const [catalogs, setCatalogs] = useState<any[]>([])
+  const [catalogsLoaded, setCatalogsLoaded] = useState(false)
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState("")
@@ -46,6 +47,7 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
     try {
       const catalogsData = await api.getCatalogs()
       setCatalogs(catalogsData)
+      setCatalogsLoaded(true)
       setError("")
     } catch (err: any) {
       console.error("Failed to load catalogs:", err)
@@ -53,6 +55,7 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
       // Sector not resolved yet — parent will remount this component once sector is set.
       if (err.name === 'SectorRequiredError' || !api.getCurrentSector()) return
 
+      setCatalogsLoaded(true)
       if (err.status === 403) {
         setError("Access denied: Insufficient permissions to view catalogs.")
       } else {
@@ -84,8 +87,9 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
         question: question.trim(),
       })
       setQueryResult(result)
-    } catch (err) {
-      setError("Failed to generate query. Please try again.")
+    } catch (err: any) {
+      const detail = err?.body?.detail || err?.message
+      setError(detail ? `Generation failed: ${detail}` : "Failed to generate query. Please try again.")
     } finally {
       setIsLoading(false)
     }
@@ -135,12 +139,25 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
                 </Select>
               </div>
 
+              {/* Empty state — catalogs loaded but none exist in this sector */}
+              {catalogsLoaded && catalogs.length === 0 && !error && (
+                <div className="mb-4 rounded-lg border border-dashed p-4 text-sm text-muted-foreground text-center">
+                  No catalogs in this Sector yet. Ask your Colonel to import one.
+                </div>
+              )}
+
               {/* Question Input */}
               <div className="mb-4">
                 <Textarea
                   placeholder="What's your data question?"
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                      e.preventDefault()
+                      handleGenerateQuery()
+                    }
+                  }}
                   className="min-h-[100px] sm:min-h-[140px] resize-none border-0 bg-transparent text-lg sm:text-xl placeholder:text-muted-foreground focus-visible:ring-0 p-0 font-normal"
                   rows={3}
                 />
@@ -305,6 +322,14 @@ export function QueryGenerator({ api }: QueryGeneratorProps) {
                           <div className="text-xs sm:text-sm text-muted-foreground">• Default row limit applied for safety</div>
                         )}
 
+                        {(queryResult.validation as any).errors?.length > 0 && (
+                          <div className="space-y-1">
+                            <h5 className="text-xs sm:text-sm font-medium text-red-600">Errors:</h5>
+                            {(queryResult.validation as any).errors.map((e: string, i: number) => (
+                              <div key={i} className="text-xs sm:text-sm text-red-600">• {e}</div>
+                            ))}
+                          </div>
+                        )}
                         {queryResult.validation.warnings.length > 0 && (
                           <div className="space-y-1">
                             <h5 className="text-xs sm:text-sm font-medium text-yellow-600">Warnings:</h5>

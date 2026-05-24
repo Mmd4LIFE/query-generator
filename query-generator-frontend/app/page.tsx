@@ -24,9 +24,12 @@ import { ManageCatalogsPage } from "@/components/manage-catalogs-page"
 import { UserSettingsPage } from "@/components/user-settings-page"
 import { SettingsPage } from "@/components/settings-page"
 import { SectorsAdminPage } from "@/components/sectors-admin-page"
+import { CorrectionsPage } from "@/components/corrections-page"
+import { SectorSettingsPage } from "@/components/sector-settings-page"
+import { CostDashboardPage } from "@/components/cost-dashboard-page"
 import { getUserPermissions } from "@/lib/utils"
 
-type Page = "generate" | "catalogs" | "users" | "history" | "settings" | "sectors"
+type Page = "generate" | "catalogs" | "users" | "history" | "settings" | "sectors" | "corrections" | "sector-settings" | "cost"
 
 function RoleIcon({ role, className = "w-3 h-3" }: { role: string; className?: string }) {
   const r = role.toLowerCase()
@@ -396,6 +399,28 @@ export default function QueryGeneratorApp() {
           )}
           {currentPage === "users" && (
             <UserSettingsPage
+              api={api}
+              userProfile={userProfile}
+              activeSectorId={activeSectorId}
+            />
+          )}
+          {currentPage === "corrections" && permissions.canApproveKnowledge && (
+            <CorrectionsPage
+              key={activeSectorId || '_'}
+              api={api}
+              userProfile={userProfile}
+              activeSectorId={activeSectorId}
+            />
+          )}
+          {currentPage === "sector-settings" && permissions.canManageSecurityPolicies && (
+            <SectorSettingsPage
+              key={activeSectorId || '_'}
+              api={api}
+            />
+          )}
+          {currentPage === "cost" && permissions.canApproveKnowledge && (
+            <CostDashboardPage
+              key={activeSectorId || '_'}
               api={api}
               userProfile={userProfile}
               activeSectorId={activeSectorId}

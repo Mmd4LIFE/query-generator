@@ -487,60 +487,31 @@ Phases are ordered by dependency. Do not start phase N+1 until phase N has shipp
 
 **Phase 6 (API hardening)** — partial
 
-- ✅ Correlation IDs (middleware + structlog contextvars + error
-  responses).
+- ✅ Correlation IDs (middleware + structlog contextvars + error responses).
 - ✅ `/cost-summary` endpoints (sector + global).
-- 🔲 SSE streaming on `/generate` — deferred (needs matching frontend
-  consumer; bundle with Phase 7 generate page work).
-- 🔲 Pagination still ad-hoc per router; should be standardised.
+- ✅ **Chunk-ID persistence** — `generate.py` now writes `context_chunk_ids: {ids, scores}` to `QueryHistory` for every successful and no-sql generation.
+- 🔲 SSE streaming on `/generate` — deferred; requires OpenAI streaming + frontend EventSource consumer.
+- 🔲 Pagination — still ad-hoc per router; standardised cursor/offset schema not yet applied uniformly.
 
-**Phase 7 (frontend)** — Sectors admin shipped
+**Phase 7 (frontend)** — complete
 
 - ✅ Role vocabulary + `sectors[]` plumbing through api-client.
 - ✅ Sector switcher in header; auto-pick + localStorage persistence.
-- ✅ **Generals now resolve their "current Sector" from `/v1/sectors`**
-  (their JWT has `sectors=[]` since they're cross-tenant). Every active
-  Sector is surfaced as a synthetic membership with role='general' so
-  the switcher renders them and sector-scoped requests have a target.
-  This closes the "No current sector selected" error a General hit
-  when navigating to a sector-scoped page.
-- ✅ **SectorsAdminPage** (General-only): one-page management surface
-  - Lists every active + archived Sector, with code, name, description.
-  - Create Sector dialog with code-normalisation (lowercase, no spaces).
-  - Edit Sector dialog (rename, description, active toggle).
-  - Archive confirmation (soft-delete, reversible by toggling Active back on).
-  - Inline-expandable members list per Sector with role badge.
-  - Add-member form: dropdown of eligible users × {Colonel, Captain, Soldier}.
-  - Remove-member action.
-  - Switcher refreshes automatically after every create / rename / archive.
-- ✅ Navigation entry "Sectors" appears only when `permissions.isGeneral`.
-- ✅ api-client gains `createSector`, `updateSector`, `deleteSector`,
-  `listSectorMembers`. `getUserPermissions()` now exposes `isGeneral`
-  separately from the legacy `isAdmin` alias.
-- ✅ **User Management page** rebuilt for the new role model
-  ([components/user-settings-page.tsx](query-generator-frontend/components/user-settings-page.tsx)):
-  - Table shows badges per role: a "General" pill for cross-Sector
-    admins plus one outline pill per Sector membership ("Colonel @
-    ops", "Captain @ growth", …) using the Sector code from
-    `/v1/sectors`.
-  - Split into three focused dialogs:
-    - **Add user** — username, email, full_name, password, active flag.
-      Roles assigned separately (compose, don't conflate).
-    - **Edit details** — full_name, email, optional password reset,
-      active toggle. Username is immutable.
-    - **Manage roles** — dedicated dialog with a *General* switch
-      (calls `promoteToGeneral` / `revokeGeneral`) and a per-Sector
-      table where each row is `(Sector, role-dropdown, remove)`. An
-      "Assign to another Sector" inline form lets a General add
-      memberships without leaving the page.
-  - Activate / deactivate inline (UserCheck / UserX icon).
-  - Delete with confirmation dialog (no more `confirm()`).
-  - Cost-per-user column preserved (informational; non-blocking load).
-- 🔲 Sector-specific pages still missing: Corrections review queue UI,
-  Sector settings UI, cost dashboards.
-- 🔲 Generate page URL move (under `/v1/sectors/{sid}/generate`) +
-  SSE consumer.
-- 🔲 SQL syntax highlighting, Cmd+Enter, empty states.
+- ✅ Generals resolve synthetic sector memberships from `/v1/sectors`.
+- ✅ **SectorsAdminPage** — full visual redesign: stats strip, polished sector cards with role-icon avatars, color-coded role badges (violet/blue/emerald), inline members panel, assign-member form.
+- ✅ Navigation entry "Sectors" — General-only.
+- ✅ **User Management page** — General view (full system) + Colonel view (sector-scoped with create-user, sector status panel, per-user cost table).
+- ✅ **CorrectionsPage** (`components/corrections-page.tsx`) — Colonel+. Lists pending/approved/rejected corrections with status tabs and badge counts. Approve / Reject inline (reject prompts for notes). Remounts on sector change.
+- ✅ **SectorSettingsPage** (`components/sector-settings-page.tsx`) — Colonel+. Lists all settings grouped by category with source badge (sector/global/default), inline edit by ui_type, reset-to-global for sector overrides, lock icon for non-overridable keys.
+- ✅ **CostDashboardPage** (`components/cost-dashboard-page.tsx`) — Colonel+ sees sector cost; General additionally sees "All Sectors" global view. Stat cards (spend / queries / tokens / error rate), group-by tabs (user / day / model / sector for General), sortable table with bold total row, date-range filter.
+- ✅ **Query Generator improvements**:
+  - Cmd/Ctrl+Enter submits the query.
+  - Empty state when sector has no catalogs: "No catalogs in this Sector yet. Ask your Colonel."
+  - `validation.errors` now displayed in the Validation tab (was only showing warnings).
+  - Generation errors surface the backend `detail` message instead of a generic string.
+- ✅ Navigation — three new entries added (Corrections, Sector Settings, Cost Dashboard), all Colonel+ gated.
+- 🔲 SQL syntax highlighting (Shiki/highlight.js) — deferred; requires package install and SSR consideration.
+- 🔲 Generate page URL move to `/v1/sectors/{sid}/generate` + SSE token-streaming consumer.
 
 ### Critical bug fix — SectorContext mistyped as User in every Phase-2 router
 
